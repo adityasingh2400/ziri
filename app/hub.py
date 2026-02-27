@@ -67,8 +67,19 @@ class AuraHub:
             weather=weather,
             nba=nba,
             news=news,
+            bedrock_client=self.brain._bedrock,
+            bedrock_model_id=settings.bedrock_model_id,
         )
         tts = PollyTTS(settings=settings)
+
+        from app.core.personality import QUICK_REPLIES
+        all_phrases = []
+        for pool in QUICK_REPLIES.values():
+            all_phrases.extend(pool)
+        if all_phrases:
+            cached = tts.precache_phrases(all_phrases)
+            if cached:
+                logger.info("Pre-cached %d TTS phrases", cached)
 
         self.orchestrator = AuraOrchestrator(
             settings=settings,

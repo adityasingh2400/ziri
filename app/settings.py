@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     elevenlabs_api_key: Optional[str] = None
     elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"
-    elevenlabs_model_id: str = "eleven_multilingual_v2"
+    elevenlabs_model_id: str = "eleven_turbo_v2_5"
 
     user_latitude: float = 40.7128
     user_longitude: float = -74.0060

@@ -20,10 +20,21 @@ logger = logging.getLogger(__name__)
 class SpotifyController:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._cached_client: Any = None
+        self._cached_can_control: bool = False
+        self._cache_expires: float = 0
 
     def _build_client(self) -> tuple[Any, bool]:
+        import time
+        now = time.time()
+        if self._cached_client and now < self._cache_expires:
+            return self._cached_client, self._cached_can_control
+
         if not spotipy:
             return None, False
+
+        client = None
+        can_control = False
 
         if (
             self.settings.spotify_refresh_token
@@ -51,21 +62,29 @@ class SpotifyController:
                 token_info = oauth.refresh_access_token(self.settings.spotify_refresh_token)
                 access_token = token_info.get("access_token")
                 if access_token:
-                    return spotipy.Spotify(auth=access_token), True
+                    client = spotipy.Spotify(auth=access_token)
+                    can_control = True
             except Exception as exc:
                 logger.warning("Spotify refresh-token flow failed, falling back: %s", exc)
 
-        if self.settings.spotify_user_access_token:
-            return spotipy.Spotify(auth=self.settings.spotify_user_access_token), True
+        if not client and self.settings.spotify_user_access_token:
+            client = spotipy.Spotify(auth=self.settings.spotify_user_access_token)
+            can_control = True
 
-        if self.settings.spotify_client_id and self.settings.spotify_client_secret:
+        if not client and self.settings.spotify_client_id and self.settings.spotify_client_secret:
             creds = SpotifyClientCredentials(
                 client_id=self.settings.spotify_client_id,
                 client_secret=self.settings.spotify_client_secret,
             )
-            return spotipy.Spotify(auth_manager=creds), False
+            client = spotipy.Spotify(auth_manager=creds)
+            can_control = False
 
-        return None, False
+        if client:
+            self._cached_client = client
+            self._cached_can_control = can_control
+            self._cache_expires = now + 3000  # ~50 minutes
+
+        return client, can_control
 
     def _resolve_target_device(
         self,

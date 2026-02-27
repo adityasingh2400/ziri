@@ -83,6 +83,8 @@ _TOOL_NAME_MAP: dict[str, str] = {
     "nba_team": "nba.team",
     "news_headlines": "news.headlines",
     "news_topic": "news.topic",
+    "time_now": "time.now",
+    "time_date": "time.date",
 }
 
 _TOOL_INTENT_MAP: dict[str, IntentType] = {
@@ -111,6 +113,8 @@ _TOOL_INTENT_MAP: dict[str, IntentType] = {
     "nba.team": IntentType.SPORTS,
     "news.headlines": IntentType.NEWS,
     "news.topic": IntentType.NEWS,
+    "time.now": IntentType.INFO_QUERY,
+    "time.date": IntentType.INFO_QUERY,
 }
 
 _ACTION_CODES: dict[str, str] = {
@@ -139,6 +143,8 @@ _ACTION_CODES: dict[str, str] = {
     "nba.team": "NBA_SCORES",
     "news.headlines": "NEWS_HEADLINES",
     "news.topic": "NEWS_TOPIC",
+    "time.now": "TIME_NOW",
+    "time.date": "TIME_DATE",
 }
 
 # ======================================================================
@@ -297,6 +303,16 @@ _NEWS_PHRASES = [
 _NEWS_TOPIC_PREFIXES = [
     "news about ", "news on ", "what's happening with ",
     "any news about ", "any news on ",
+]
+
+_TIME_PHRASES = [
+    "what time is it", "what's the time", "time", "current time",
+    "tell me the time",
+]
+
+_DATE_PHRASES = [
+    "what day is it", "what's the date", "what's today's date",
+    "what date is it", "today's date", "what day is today",
 ]
 
 
@@ -487,6 +503,14 @@ class Brain:
                 confidence=0.8,
             )
 
+        # -- Time --
+        if self._match_exact(text, _TIME_PHRASES):
+            return self._decision("time.now", {})
+
+        # -- Date --
+        if self._match_exact(text, _DATE_PHRASES):
+            return self._decision("time.date", {})
+
         # -- Weather --
         if self._match_contains(text, _WEATHER_PHRASES):
             return self._decision("weather.current", {})
@@ -577,7 +601,7 @@ class Brain:
         try:
             response = self._bedrock.converse(
                 modelId=self.settings.bedrock_model_id,
-                system=[{"text": ROUTER_SYSTEM_PROMPT}],
+                system=[{"text": ROUTER_SYSTEM_PROMPT}, {"cachePoint": {"type": "default"}}],
                 messages=[{"role": "user", "content": [{"text": user_prompt}]}],
                 toolConfig={"tools": TOOL_DEFINITIONS},
                 inferenceConfig={"maxTokens": 400, "temperature": 0.1},

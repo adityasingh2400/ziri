@@ -11,6 +11,13 @@ from app.integrations.spotify_controller import SpotifyController
 from app.integrations.weather import WeatherController
 from app.schemas import IntentRequest, RouterDecision, ToolResult
 
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
 
 class ToolRunner:
     def __init__(
@@ -23,6 +30,8 @@ class ToolRunner:
         weather: WeatherController,
         nba: NBAController,
         news: NewsController,
+        bedrock_client: Any = None,
+        bedrock_model_id: str = "",
     ) -> None:
         self.spotify = spotify
         self.calendar = calendar
@@ -32,6 +41,8 @@ class ToolRunner:
         self.weather = weather
         self.nba = nba
         self.news = news
+        self._bedrock = bedrock_client
+        self._model_id = bedrock_model_id
 
     def run(
         self,
@@ -147,13 +158,17 @@ class ToolRunner:
             return self.home_scene.apply_scene(scene_name, device_context.room_name)
 
         if decision.tool_name == "general.answer":
-            return ToolResult(
-                ok=True,
-                action_code=decision.action_code or "INFO_REPLY",
-                speak_text=decision.speak_text or "I can help with that from your phone panel.",
-                private_note=decision.private_note,
-                payload={"query": decision.tool_args.get("query", req.raw_text)},
-            )
+            return self._answer_with_bedrock(decision, req)
+
+        if decision.tool_name == "time.now":
+            now = datetime.now()
+            h = now.hour % 12 or 12
+            ampm = "AM" if now.hour < 12 else "PM"
+            return ToolResult(ok=True, action_code="TIME_NOW", speak_text=f"It's {h}:{now.strftime('%M')} {ampm}.", private_note="")
+
+        if decision.tool_name == "time.date":
+            now = datetime.now()
+            return ToolResult(ok=True, action_code="TIME_DATE", speak_text=f"Today is {now.strftime('%A, %B %d, %Y')}.", private_note="")
 
         if decision.tool_name == "weather.current":
             return self.weather.get_current_weather()
@@ -183,3 +198,32 @@ class ToolRunner:
             private_note=f"Unknown tool: {decision.tool_name}",
             error="unknown_tool",
         )
+
+    def _answer_with_bedrock(self, decision: RouterDecision, req: IntentRequest) -> ToolResult:
+        query = str(decision.tool_args.get("query") or req.raw_text)
+
+        if not self._bedrock:
+            return ToolResult(ok=True, action_code="INFO_REPLY", speak_text="I'm not sure about that.", private_note="", payload={"query": query})
+
+        try:
+            response = self._bedrock.converse(
+                modelId=self._model_id,
+                system=[{"text": (
+                    "You are Ziri, a concise voice assistant. Answer the user's question in 1-2 short sentences. "
+                    "Be direct and accurate. Speak naturally as if talking to a friend. "
+                    "Maximum 25 words. No filler."
+                )}],
+                messages=[{"role": "user", "content": [{"text": query}]}],
+                inferenceConfig={"maxTokens": 80, "temperature": 0.5},
+            )
+
+            content = response.get("output", {}).get("message", {}).get("content", [])
+            answer = "".join(part.get("text", "") for part in content if part.get("text")).strip()
+
+            if not answer:
+                return ToolResult(ok=True, action_code="INFO_REPLY", speak_text="I'm not sure about that.", private_note="")
+
+            return ToolResult(ok=True, action_code="INFO_REPLY", speak_text=answer, private_note="", payload={"query": query})
+        except Exception as exc:
+            logger.warning("Bedrock general answer failed: %s", exc)
+            return ToolResult(ok=True, action_code="INFO_REPLY", speak_text="I couldn't look that up right now.", private_note=str(exc))

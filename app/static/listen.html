@@ -425,12 +425,37 @@ function setStatus(m){statusEl.textContent=m}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function addEntry(you,ziri,err){const d=document.createElement('div');d.className='entry';let h=`<div class="label you">You</div><div>${esc(you)}</div>`;if(ziri){const c=err?'err':'ziri';h+=`<div class="label ${c}" style="margin-top:5px">${err?'Error':'Ziri'}</div><div class="${c}">${esc(ziri)}</div>`}d.innerHTML=h;logEl.prepend(d)}
 
+// ===== Thinking ping sound =====
+let thinkOsc=null,thinkGain=null,thinkInterval=null;
+function startThinkPing(){
+  if(thinkOsc)return;
+  try{
+    const ctx=keepaliveCtx||new(window.AudioContext||window.webkitAudioContext)();
+    thinkGain=ctx.createGain();thinkGain.gain.value=0;thinkGain.connect(ctx.destination);
+    thinkOsc=ctx.createOscillator();thinkOsc.frequency.value=880;thinkOsc.type='sine';
+    thinkOsc.connect(thinkGain);thinkOsc.start();
+    let on=true;
+    thinkGain.gain.setValueAtTime(0.06,ctx.currentTime);
+    thinkGain.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.12);
+    thinkInterval=setInterval(()=>{
+      thinkGain.gain.setValueAtTime(0.06,ctx.currentTime);
+      thinkGain.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.12);
+    },800);
+  }catch(e){}
+}
+function stopThinkPing(){
+  if(thinkInterval){clearInterval(thinkInterval);thinkInterval=null}
+  if(thinkOsc){try{thinkOsc.stop()}catch(_){}thinkOsc=null}
+  thinkGain=null;
+}
+
 async function sendIntent(text){
-  showTx(text,true);setStatus('Thinking...');
+  showTx(text,true);setStatus('Thinking...');startThinkPing();
   const body={user_id:'Aditya',device_id:deviceSelect.value,room:deviceSelect.value.replace('Browser_',''),raw_text:text,timestamp:new Date().toISOString()};
   try{
     const r=await fetch('/intent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();const spoken=d.speak_text||d.private_note||'(no response)';
+    stopThinkPing();
     addEntry(text,spoken,!r.ok);fadeTx();
 
     if(d.audio_url){
@@ -446,7 +471,7 @@ async function sendIntent(text){
       speechSynthesis.speak(u);setStatus('Speaking...');
     }else{setStatus(listening?'Listening...':'')}
     setTimeout(poll,600);
-  }catch(e){addEntry(text,e.message,true);fadeTx();setStatus(listening?'Listening...':'')}
+  }catch(e){stopThinkPing();addEntry(text,e.message,true);fadeTx();setStatus(listening?'Listening...':'')}
 }
 
 if(recog){
