@@ -127,9 +127,9 @@ class SpotifyController:
             logger.debug("Could not wake device %s: %s", device_id, exc)
             return False
 
-    def _ensure_active_device(self, client: Any, device_id: str | None, speaker_name: str | None) -> str | None:
+    def _ensure_active_device(self, client: Any, explicit_device_id: str | None, speaker_name: str | None) -> str | None:
         """Get a device ID and make sure it's awake."""
-        target = self._resolve_target_device(client, device_id, speaker_name)
+        target = self._resolve_target_device(client, explicit_device_id, speaker_name)
 
         try:
             payload = client.devices()
@@ -609,6 +609,73 @@ class SpotifyController:
         except Exception as exc:
             logger.exception("Spotify set_volume failed")
             return ToolResult(ok=False, action_code="MUSIC_ERROR", speak_text="I could not set the volume.", private_note=str(exc), error="spotify_set_volume_exception")
+
+    # ------------------------------------------------------------------
+    # Audio ducking – lower volume while Ziri is listening/thinking/speaking
+    # ------------------------------------------------------------------
+
+    _pre_duck_volume: int | None = None
+
+    def duck(self, duck_percent: int = 25) -> dict[str, Any]:
+        """Lower Spotify volume for voice interaction. Returns the pre-duck volume."""
+        client, can_control = self._build_client()
+        if not client or not can_control:
+            return {"ok": False, "error": "no_client"}
+
+        try:
+            playback = client.current_playback() or {}
+            device = playback.get("device") or {}
+            current_vol = device.get("volume_percent")
+            if current_vol is None:
+                return {"ok": False, "error": "no_playback"}
+
+            if current_vol <= duck_percent:
+                self._pre_duck_volume = current_vol
+                return {"ok": True, "previous_volume": current_vol, "ducked_to": current_vol, "skipped": True}
+
+            self._pre_duck_volume = current_vol
+            target_vol = max(0, min(100, duck_percent))
+            client.volume(target_vol)
+            logger.info("Ducked Spotify volume %d → %d", current_vol, target_vol)
+            return {"ok": True, "previous_volume": current_vol, "ducked_to": target_vol}
+        except Exception as exc:
+            logger.exception("Spotify duck failed")
+            return {"ok": False, "error": str(exc)}
+
+    def unduck(self) -> dict[str, Any]:
+        """Gradually restore Spotify volume to the pre-duck level."""
+        import time as _time
+
+        client, can_control = self._build_client()
+        if not client or not can_control:
+            return {"ok": False, "error": "no_client"}
+
+        restore_vol = self._pre_duck_volume
+        if restore_vol is None:
+            return {"ok": False, "error": "not_ducked"}
+
+        try:
+            playback = client.current_playback() or {}
+            current_vol = (playback.get("device") or {}).get("volume_percent", 25)
+
+            steps = 4
+            diff = restore_vol - current_vol
+            if diff <= 0:
+                self._pre_duck_volume = None
+                return {"ok": True, "restored_volume": restore_vol}
+
+            for i in range(1, steps + 1):
+                step_vol = current_vol + int(diff * (i / steps))
+                client.volume(min(step_vol, 100))
+                if i < steps:
+                    _time.sleep(0.3)
+
+            logger.info("Unducked Spotify volume %d → %d (ramped)", current_vol, restore_vol)
+            self._pre_duck_volume = None
+            return {"ok": True, "restored_volume": restore_vol}
+        except Exception as exc:
+            logger.exception("Spotify unduck failed")
+            return {"ok": False, "error": str(exc)}
 
     def add_to_queue(
         self,

@@ -15,7 +15,7 @@ from app.core.device_registry import DeviceContext
 from app.core.memory import MemoryStore
 from app.core.personality import rewrite_response
 from app.core.tool_runner import ToolRunner
-from app.integrations.tts import PollyTTS
+from app.integrations.tts import TTS
 from app.schemas import IntentRequest, IntentResponse, RouterDecision, ToolResult
 
 
@@ -34,7 +34,7 @@ class AuraOrchestrator:
         brain: Brain,
         tool_runner: ToolRunner,
         memory: MemoryStore,
-        tts: PollyTTS,
+        tts: TTS,
     ) -> None:
         self.settings = settings
         self.brain = brain

@@ -27,7 +27,7 @@ from app.integrations.news import NewsController
 from app.integrations.phone_bridge import PhoneBridge
 from app.integrations.reminders_bridge import RemindersBridge
 from app.integrations.spotify_controller import SpotifyController
-from app.integrations.tts import PollyTTS
+from app.integrations.tts import TTS
 from app.integrations.weather import WeatherController
 from app.schemas import (
     IntentRequest,
@@ -70,7 +70,7 @@ class AuraHub:
             bedrock_client=self.brain._bedrock,
             bedrock_model_id=settings.bedrock_model_id,
         )
-        tts = PollyTTS(settings=settings)
+        tts = TTS(settings=settings)
 
         from app.core.personality import QUICK_REPLIES
         all_phrases = []
@@ -170,12 +170,13 @@ class AuraHub:
         using_bedrock = self.brain._bedrock is not None
 
         degraded = not using_bedrock
+        eleven_ok = bool(self.settings.elevenlabs_api_key)
         components = {
             "router": "bedrock" if using_bedrock else "heuristic_fallback",
             "sessions": "supabase" if using_supabase else "in_memory",
             "memory": self.memory_store.__class__.__name__,
             "preferences": self.preferences_repository.__class__.__name__,
-            "tts": "polly" if self.settings.enable_polly else "disabled",
+            "tts": "elevenlabs" if eleven_ok else ("polly" if self.settings.enable_polly else "disabled"),
         }
 
         return StatusResponse(

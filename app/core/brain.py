@@ -23,6 +23,9 @@ Rules:
 - If user asks for private phone-only data (texts, OTP, sensitive info), use private_phone_data.
 - For pronouns like "it" / "that", use memory_context to resolve the previous media command.
 - Keep speak_text concise and spoken-friendly.
+- Use calendar_today ONLY when the user explicitly asks about their calendar, schedule, meetings, or events.
+- Use general_answer for casual questions, opinions, advice, or anything not clearly targeting another tool.
+- When in doubt, prefer general_answer over other tools.
 """
 
 # ======================================================================
@@ -367,7 +370,7 @@ class Brain:
     def _deterministic_route(
         self, req: IntentRequest, last_music_context: dict[str, Any]
     ) -> RouterDecision | None:
-        text = req.raw_text.lower().strip()
+        text = req.raw_text.lower().strip().rstrip("?.!,")
 
         # -- Replay (must come before generic "play" catch-all) --
         if any(text == p or text.startswith(p) for p in _REPLAY_PHRASES):

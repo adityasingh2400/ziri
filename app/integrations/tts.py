@@ -91,29 +91,48 @@ class TTS:
         return None
 
     def _elevenlabs_generate(self, text: str) -> bytes | None:
+        """Stream audio from ElevenLabs, collecting chunks as they arrive."""
         try:
             import httpx
-            resp = httpx.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{self.settings.elevenlabs_voice_id}?output_format=mp3_44100_128",
-                headers={
-                    "xi-api-key": self.settings.elevenlabs_api_key,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "text": text,
-                    "model_id": self.settings.elevenlabs_model_id,
-                    "voice_settings": {
-                        "stability": 0.55,
-                        "similarity_boost": 0.85,
-                        "speed": 1.2,
-                    },
-                },
-                timeout=12,
+
+            s = self.settings
+            url = (
+                f"https://api.elevenlabs.io/v1/text-to-speech/{s.elevenlabs_voice_id}/stream"
+                f"?output_format={s.elevenlabs_output_format}"
+                f"&optimize_streaming_latency={s.elevenlabs_streaming_latency}"
             )
-            if resp.status_code != 200:
-                logger.warning("ElevenLabs TTS failed (status %s): %s", resp.status_code, resp.text[:200])
+            headers = {
+                "xi-api-key": s.elevenlabs_api_key,
+                "Content-Type": "application/json",
+            }
+            body = {
+                "text": text,
+                "model_id": s.elevenlabs_model_id,
+                "voice_settings": {
+                    "stability": s.elevenlabs_stability,
+                    "similarity_boost": s.elevenlabs_similarity_boost,
+                    "speed": s.elevenlabs_speed,
+                },
+            }
+
+            buf = bytearray()
+            with httpx.Client(timeout=20) as client:
+                with client.stream("POST", url, headers=headers, json=body) as resp:
+                    if resp.status_code != 200:
+                        resp.read()
+                        logger.warning(
+                            "ElevenLabs TTS failed (status %s): %s",
+                            resp.status_code,
+                            resp.text[:200],
+                        )
+                        return None
+                    for chunk in resp.iter_bytes(chunk_size=4096):
+                        buf.extend(chunk)
+
+            if not buf:
+                logger.warning("ElevenLabs TTS returned empty audio")
                 return None
-            return resp.content
+            return bytes(buf)
         except Exception as exc:
             logger.warning("ElevenLabs TTS error: %s", exc)
             return None
@@ -141,6 +160,3 @@ class TTS:
         files = sorted(_AUDIO_DIR.glob("*.mp3"), key=lambda f: f.stat().st_mtime)
         while len(files) > max_files:
             files.pop(0).unlink(missing_ok=True)
-
-
-PollyTTS = TTS

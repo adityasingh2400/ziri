@@ -18,6 +18,8 @@ from app.hub import AuraHub
 from app.integrations.spotify_auth import SpotifyAuthHelper
 from app.schemas import IntentRequest, IntentResponse, StatusResponse
 
+from datetime import datetime, timezone
+
 settings = get_settings()
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 
@@ -129,6 +131,42 @@ async def spotify_art_proxy(url: str = Query("")) -> Response:
     )
 
 
+@app.post("/spotify/duck")
+async def spotify_duck() -> dict[str, Any]:
+    """Lower Spotify volume while Ziri is listening/thinking/speaking."""
+    return hub.orchestrator.tool_runner.spotify.duck()
+
+
+@app.post("/spotify/unduck")
+async def spotify_unduck() -> dict[str, Any]:
+    """Restore Spotify volume after Ziri finishes responding."""
+    return hub.orchestrator.tool_runner.spotify.unduck()
+
+
+@app.post("/spotify/play")
+async def spotify_play() -> dict[str, Any]:
+    result = hub.orchestrator.tool_runner.spotify.resume()
+    return {"ok": result.ok, "error": result.error}
+
+
+@app.post("/spotify/pause")
+async def spotify_pause() -> dict[str, Any]:
+    result = hub.orchestrator.tool_runner.spotify.pause()
+    return {"ok": result.ok, "error": result.error}
+
+
+@app.post("/spotify/next")
+async def spotify_next() -> dict[str, Any]:
+    result = hub.orchestrator.tool_runner.spotify.skip_next()
+    return {"ok": result.ok, "error": result.error}
+
+
+@app.post("/spotify/prev")
+async def spotify_prev() -> dict[str, Any]:
+    result = hub.orchestrator.tool_runner.spotify.previous_track()
+    return {"ok": result.ok, "error": result.error}
+
+
 @app.get("/debug/connections")
 async def debug_connections() -> dict[str, Any]:
     """Quick status of all connected services for the debug panel."""
@@ -163,3 +201,74 @@ async def listen_page() -> HTMLResponse:
     if _listen_html.exists():
         return HTMLResponse(_listen_html.read_text(encoding="utf-8"))
     return HTMLResponse("<h3>listen.html not found in app/static/</h3>", status_code=404)
+
+
+# ---------------------------------------------------------------------------
+# Siri Shortcuts endpoint
+# ---------------------------------------------------------------------------
+
+
+@app.post("/siri")
+async def siri_intent(text: str = Query(..., min_length=1, max_length=3000)) -> dict[str, Any]:
+    """Simplified endpoint for Siri Shortcuts.
+
+    Usage from Shortcuts app:
+        POST http://<mac-ip>:8000/siri?text=play+some+jazz
+    Returns JSON with speak_text and optional audio_url.
+    """
+    request = IntentRequest(
+        user_id=settings.siri_user_id,
+        device_id=settings.siri_device_id,
+        room=settings.siri_room,
+        raw_text=text,
+        timestamp=datetime.now(timezone.utc),
+    )
+    response = await hub.handle_intent(request)
+    return {
+        "speak_text": response.speak_text,
+        "private_note": response.private_note,
+        "action_code": response.action_code,
+        "audio_url": response.audio_url,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Listener dashboard
+# ---------------------------------------------------------------------------
+
+_listener_ref: Any = None
+
+
+def set_listener(listener: Any) -> None:
+    """Called by run_listener.py to make the listener accessible to the dashboard."""
+    global _listener_ref
+    _listener_ref = listener
+
+
+@app.get("/dashboard/api")
+async def dashboard_api() -> dict[str, Any]:
+    """JSON API for the listener dashboard."""
+    listener_status = _listener_ref.get_status() if _listener_ref else {"running": False, "state": "not_started", "history": []}
+    connections = {}
+    try:
+        s = settings
+        eleven_ok = bool(s.elevenlabs_api_key)
+        spotify_ok = bool(s.spotify_refresh_token and s.spotify_client_id)
+        bedrock_ok = hub.brain._bedrock is not None
+        connections = {
+            "spotify": spotify_ok,
+            "bedrock": bedrock_ok,
+            "tts": "elevenlabs" if eleven_ok else ("polly" if s.enable_polly else "none"),
+        }
+    except Exception:
+        pass
+    return {"listener": listener_status, "connections": connections}
+
+
+_dashboard_html = _static_dir / "dashboard.html"
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_page() -> HTMLResponse:
+    """Redirect to /listen which serves as the combined dashboard."""
+    return HTMLResponse('<script>location.href="/listen"</script>')

@@ -49,12 +49,31 @@ class Settings(BaseSettings):
     memory_window: int = 8
 
     elevenlabs_api_key: Optional[str] = None
-    elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"
+    elevenlabs_voice_id: str = "yj30vwTGJxSHezdAGsv9"
     elevenlabs_model_id: str = "eleven_turbo_v2_5"
+    elevenlabs_output_format: str = "mp3_44100_192"
+    elevenlabs_streaming_latency: int = 3
+    elevenlabs_stability: float = 0.55
+    elevenlabs_similarity_boost: float = 0.85
+    elevenlabs_speed: float = 1.0
 
     user_latitude: float = 40.7128
     user_longitude: float = -74.0060
     news_api_key: Optional[str] = None
+
+    # Always-on listener
+    wake_word_model: str = "hey_jarvis"
+    wake_word_threshold: float = 0.5
+    whisper_model: str = "base.en"
+    listener_device_id: str = "Mac_Listener"
+    listener_room: str = "Office"
+    listener_user_id: str = "Aditya"
+    listener_chime_enabled: bool = True
+
+    # Siri Shortcuts
+    siri_user_id: str = "Aditya"
+    siri_device_id: str = "iPhone_Siri"
+    siri_room: str = "Kitchen"
 
 
 @lru_cache
