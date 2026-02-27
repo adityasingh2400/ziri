@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     enable_polly: bool = True
     memory_window: int = 8
 
+    elevenlabs_api_key: Optional[str] = None
+    elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"
+    elevenlabs_model_id: str = "eleven_multilingual_v2"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -60,28 +60,9 @@ class SpotifyAuthHelper:
             return None
 
     def list_devices(self) -> list[dict[str, Any]]:
-        if not spotipy:
+        client = self._get_authed_client()
+        if not client:
             return []
-
-        if self.settings.spotify_user_access_token:
-            client = spotipy.Spotify(auth=self.settings.spotify_user_access_token)
-        elif (
-            self.settings.spotify_refresh_token
-            and self.settings.spotify_client_id
-            and self.settings.spotify_client_secret
-        ):
-            oauth = self._build_oauth()
-            if not oauth:
-                return []
-            try:
-                token_info = oauth.refresh_access_token(self.settings.spotify_refresh_token)
-                client = spotipy.Spotify(auth=token_info["access_token"])
-            except Exception:
-                logger.exception("Could not refresh token to list devices")
-                return []
-        else:
-            return []
-
         try:
             payload = client.devices()
             return payload.get("devices", []) if isinstance(payload, dict) else []
@@ -92,8 +73,6 @@ class SpotifyAuthHelper:
     def _get_authed_client(self) -> Any | None:
         if not spotipy:
             return None
-        if self.settings.spotify_user_access_token:
-            return spotipy.Spotify(auth=self.settings.spotify_user_access_token)
         if (
             self.settings.spotify_refresh_token
             and self.settings.spotify_client_id
@@ -107,7 +86,8 @@ class SpotifyAuthHelper:
                 return spotipy.Spotify(auth=token_info["access_token"])
             except Exception:
                 logger.exception("Could not refresh token")
-                return None
+        if self.settings.spotify_user_access_token:
+            return spotipy.Spotify(auth=self.settings.spotify_user_access_token)
         return None
 
     def get_now_playing(self) -> dict[str, Any] | None:

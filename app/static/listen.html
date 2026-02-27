@@ -164,6 +164,20 @@ canvas#color-canvas{display:none}
 
 <div id="log"></div>
 
+<!-- Debug panel -->
+<div id="debug-toggle" onclick="let p=document.getElementById('debug-panel');p.style.display=p.style.display==='block'?'none':'block'" style="position:fixed;bottom:12px;right:12px;z-index:100;font-size:.65rem;color:rgba(255,255,255,.25);cursor:pointer;user-select:none">debug</div>
+<div id="debug-panel" style="display:none;position:fixed;bottom:32px;right:12px;z-index:99;background:rgba(0,0,0,.75);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:12px 14px;max-width:280px;font-size:.7rem;color:rgba(255,255,255,.6)">
+  <div id="debug-content">loading...</div>
+</div>
+<style>
+.dbg-row{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.dbg-row:last-child{border:none}
+.dbg-label{color:rgba(255,255,255,.35)}
+.dbg-val{text-align:right}
+.dbg-ok{color:#4ade80}
+.dbg-err{color:#f87171}
+</style>
+
 <script>
 (function(){
 const $=id=>document.getElementById(id);
@@ -376,6 +390,22 @@ async function poll(){
 }
 poll();setInterval(poll,3000);
 
+// ===== Bluetooth keepalive (silent tone) =====
+let keepaliveCtx=null;
+function startKeepalive(){
+  if(keepaliveCtx)return;
+  try{
+    keepaliveCtx=new(window.AudioContext||window.webkitAudioContext)();
+    const osc=keepaliveCtx.createOscillator();
+    const gain=keepaliveCtx.createGain();
+    osc.frequency.value=1;
+    gain.gain.value=0.001;
+    osc.connect(gain);gain.connect(keepaliveCtx.destination);
+    osc.start();
+  }catch(e){}
+}
+document.addEventListener('click',startKeepalive,{once:true});
+
 // ===== Speech =====
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 if(!SR)statusEl.textContent='Speech API not supported.';
@@ -402,7 +432,14 @@ async function sendIntent(text){
     const r=await fetch('/intent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();const spoken=d.speak_text||d.private_note||'(no response)';
     addEntry(text,spoken,!r.ok);fadeTx();
-    if(d.speak_text&&'speechSynthesis' in window){
+
+    if(d.audio_url){
+      speaking=true;if(recog)try{recog.stop()}catch(_){}
+      setStatus('Speaking...');
+      const audio=new Audio(d.audio_url);
+      audio.onended=audio.onerror=()=>{speaking=false;if(listening&&recog)try{recog.start()}catch(_){}setStatus(listening?'Listening...':'')};
+      audio.play().catch(()=>{speaking=false;if(listening&&recog)try{recog.start()}catch(_){}setStatus(listening?'Listening...':'')});
+    }else if(d.speak_text&&'speechSynthesis' in window){
       speaking=true;if(recog)try{recog.stop()}catch(_){}
       const u=new SpeechSynthesisUtterance(d.speak_text);
       u.onend=u.onerror=()=>{speaking=false;if(listening&&recog)try{recog.start()}catch(_){}setStatus(listening?'Listening...':'')};
@@ -429,6 +466,32 @@ function stopListen(){
   if(recog)recog.stop();transcriptEl.className='';transcriptEl.innerHTML='';
 }
 btn.addEventListener('click',()=>{if(listening)stopListen();else startListen()});
+
+// ===== Debug panel =====
+async function loadDebug(){
+  try{
+    const r=await fetch('/debug/connections');const d=await r.json();
+    const dc=document.getElementById('debug-content');
+    const ok='<span class="dbg-ok">connected</span>';
+    const no='<span class="dbg-err">disconnected</span>';
+    let h='';
+    h+=`<div class="dbg-row"><span class="dbg-label">Spotify</span><span class="dbg-val">${d.spotify?.connected?ok:no}</span></div>`;
+    if(d.spotify?.devices?.length){
+      d.spotify.devices.forEach(dev=>{
+        h+=`<div class="dbg-row"><span class="dbg-label" style="padding-left:8px">${dev.name}</span><span class="dbg-val">${dev.is_active?'<span class="dbg-ok">active</span>':'idle'}</span></div>`;
+      });
+    }else{
+      h+=`<div class="dbg-row"><span class="dbg-label" style="padding-left:8px">devices</span><span class="dbg-val dbg-err">none found</span></div>`;
+    }
+    h+=`<div class="dbg-row"><span class="dbg-label">Bedrock</span><span class="dbg-val">${d.bedrock?.connected?ok:no}</span></div>`;
+    if(d.bedrock?.model)h+=`<div class="dbg-row"><span class="dbg-label" style="padding-left:8px">model</span><span class="dbg-val" style="font-size:.6rem;max-width:160px;word-break:break-all">${d.bedrock.model.split('/').pop()}</span></div>`;
+    h+=`<div class="dbg-row"><span class="dbg-label">TTS</span><span class="dbg-val dbg-ok">${d.tts?.engine||'?'}</span></div>`;
+    h+=`<div class="dbg-row"><span class="dbg-label" style="padding-left:8px">voice</span><span class="dbg-val" style="font-size:.6rem">${d.tts?.voice_id||'?'}</span></div>`;
+    h+=`<div class="dbg-row"><span class="dbg-label">Memory</span><span class="dbg-val">${d.memory||'?'}</span></div>`;
+    dc.innerHTML=h;
+  }catch(e){document.getElementById('debug-content').textContent='Failed to load'}
+}
+loadDebug();
 
 })();
 </script>

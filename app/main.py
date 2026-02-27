@@ -129,6 +129,28 @@ async def spotify_art_proxy(url: str = Query("")) -> Response:
     )
 
 
+@app.get("/debug/connections")
+async def debug_connections() -> dict[str, Any]:
+    """Quick status of all connected services for the debug panel."""
+    s = settings
+    eleven_ok = bool(s.elevenlabs_api_key)
+    spotify_ok = bool(s.spotify_refresh_token and s.spotify_client_id)
+    bedrock_ok = hub.brain._bedrock is not None
+
+    devices = []
+    try:
+        devices = spotify_auth.list_devices()
+    except Exception:
+        pass
+
+    return {
+        "spotify": {"connected": spotify_ok, "devices": devices},
+        "bedrock": {"connected": bedrock_ok, "model": s.bedrock_model_id if bedrock_ok else None},
+        "tts": {"engine": "elevenlabs" if eleven_ok else ("polly" if s.enable_polly else "browser"), "voice_id": s.elevenlabs_voice_id if eleven_ok else s.polly_voice_id},
+        "memory": hub.memory_store.__class__.__name__,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Browser voice client
 # ---------------------------------------------------------------------------

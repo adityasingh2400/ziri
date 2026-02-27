@@ -1,45 +1,86 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
-
-import boto3
-from botocore.client import BaseClient
 
 from app.settings import Settings
 
 logger = logging.getLogger(__name__)
 
+_AUDIO_DIR = Path(__file__).resolve().parent.parent / "static" / "audio"
+_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
-class PollyTTS:
+
+class TTS:
+    """Text-to-speech with ElevenLabs primary, Polly fallback, local file serving."""
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.enabled = settings.enable_polly
+        self._eleven_ok = bool(settings.elevenlabs_api_key)
+        self._polly = None
 
-        kwargs = {"region_name": settings.aws_region}
-        aws_access_key = settings.aws_access_key_id or settings.aws_access_key
-        if aws_access_key and settings.aws_secret_access_key:
-            kwargs["aws_access_key_id"] = aws_access_key
-            kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
-
-        self._polly: BaseClient | None = None
-        self._s3: BaseClient | None = None
-
-        if self.enabled:
+        if not self._eleven_ok and settings.enable_polly:
             try:
+                import boto3
+                kwargs = {"region_name": settings.aws_region}
+                ak = settings.aws_access_key_id or settings.aws_access_key
+                if ak and settings.aws_secret_access_key:
+                    kwargs["aws_access_key_id"] = ak
+                    kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
                 self._polly = boto3.client("polly", **kwargs)
-                if settings.s3_tts_bucket:
-                    self._s3 = boto3.client("s3", **kwargs)
             except Exception as exc:
-                logger.warning("Polly initialization failed. Falling back to text-only response: %s", exc)
-                self._polly = None
-                self._s3 = None
+                logger.warning("Polly init failed: %s", exc)
 
     def synthesize(self, text: str) -> str | None:
-        if not self.enabled or not text or not self._polly:
+        if not text:
             return None
 
+        if self._eleven_ok:
+            url = self._elevenlabs_synthesize(text)
+            if url:
+                return url
+
+        if self._polly:
+            return self._polly_synthesize(text)
+
+        return None
+
+    def _elevenlabs_synthesize(self, text: str) -> str | None:
+        try:
+            import httpx
+
+            resp = httpx.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{self.settings.elevenlabs_voice_id}?output_format=mp3_44100_128",
+                headers={
+                    "xi-api-key": self.settings.elevenlabs_api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text": text,
+                    "model_id": self.settings.elevenlabs_model_id,
+                },
+                timeout=15,
+            )
+
+            if resp.status_code != 200:
+                logger.warning("ElevenLabs TTS failed (status %s): %s", resp.status_code, resp.text[:200])
+                return None
+
+            filename = f"{uuid4().hex}.mp3"
+            path = _AUDIO_DIR / filename
+            path.write_bytes(resp.content)
+
+            self._cleanup_old_files()
+
+            return f"/static/audio/{filename}"
+        except Exception as exc:
+            logger.warning("ElevenLabs TTS error: %s", exc)
+            return None
+
+    def _polly_synthesize(self, text: str) -> str | None:
         try:
             speech = self._polly.synthesize_speech(
                 Text=text,
@@ -52,29 +93,23 @@ class PollyTTS:
                 return None
             audio_bytes = stream.read()
 
-            if not self.settings.s3_tts_bucket or not self._s3:
-                return None
+            filename = f"{uuid4().hex}.mp3"
+            path = _AUDIO_DIR / filename
+            path.write_bytes(audio_bytes)
 
-            key = (
-                f"aura-tts/{datetime.now(timezone.utc).strftime('%Y%m%d')}/"
-                f"{datetime.now(timezone.utc).strftime('%H%M%S')}-{uuid4().hex}.mp3"
-            )
-            self._s3.put_object(
-                Bucket=self.settings.s3_tts_bucket,
-                Key=key,
-                Body=audio_bytes,
-                ContentType="audio/mpeg",
-            )
+            self._cleanup_old_files()
 
-            if self.settings.s3_tts_public_base_url:
-                base = self.settings.s3_tts_public_base_url.rstrip("/")
-                return f"{base}/{key}"
-
-            return self._s3.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": self.settings.s3_tts_bucket, "Key": key},
-                ExpiresIn=3600,
-            )
+            return f"/static/audio/{filename}"
         except Exception as exc:
-            logger.warning("Polly synthesis failed: %s", exc)
+            logger.warning("Polly TTS error: %s", exc)
             return None
+
+    @staticmethod
+    def _cleanup_old_files(max_files: int = 50) -> None:
+        files = sorted(_AUDIO_DIR.glob("*.mp3"), key=lambda f: f.stat().st_mtime)
+        while len(files) > max_files:
+            files.pop(0).unlink(missing_ok=True)
+
+
+# Keep backward compat with existing imports
+PollyTTS = TTS

@@ -25,9 +25,6 @@ class SpotifyController:
         if not spotipy:
             return None, False
 
-        if self.settings.spotify_user_access_token:
-            return spotipy.Spotify(auth=self.settings.spotify_user_access_token), True
-
         if (
             self.settings.spotify_refresh_token
             and self.settings.spotify_client_id
@@ -56,7 +53,10 @@ class SpotifyController:
                 if access_token:
                     return spotipy.Spotify(auth=access_token), True
             except Exception as exc:
-                logger.warning("Spotify refresh-token flow failed, falling back to search-only: %s", exc)
+                logger.warning("Spotify refresh-token flow failed, falling back: %s", exc)
+
+        if self.settings.spotify_user_access_token:
+            return spotipy.Spotify(auth=self.settings.spotify_user_access_token), True
 
         if self.settings.spotify_client_id and self.settings.spotify_client_secret:
             creds = SpotifyClientCredentials(
@@ -232,11 +232,10 @@ class SpotifyController:
                     client.start_playback(device_id=target_device, uris=[uri])
                 else:
                     client.start_playback(uris=[uri])
-                place = f" in the {speaker_name}" if speaker_name else ""
                 return ToolResult(
                     ok=True,
                     action_code="MUSIC_START",
-                    speak_text=f"Playing {title} by {artist_name}{place}.",
+                    speak_text=f"Playing {title} by {artist_name}.",
                     private_note="",
                     payload={
                         "spotify_url": external_url,
@@ -299,12 +298,11 @@ class SpotifyController:
             else:
                 client.volume(new_volume)
 
-            place = f" in the {speaker_name}" if speaker_name else ""
             direction = "up" if delta_percent >= 0 else "down"
             return ToolResult(
                 ok=True,
                 action_code="MUSIC_VOLUME",
-                speak_text=f"Turning volume {direction} to {new_volume} percent{place}.",
+                speak_text=f"Volume {direction} to {new_volume} percent.",
                 private_note="",
                 payload={"volume_percent": new_volume},
             )
@@ -601,12 +599,25 @@ class SpotifyController:
             return ToolResult(ok=False, action_code="MUSIC_ERROR", speak_text="", private_note="Spotify not configured.", error="spotify_not_configured")
 
         try:
-            search = client.search(q=query, type="artist", limit=1)
+            search = client.search(q=f"artist:{query}", type="artist", limit=5)
             artists = search.get("artists", {}).get("items", [])
+            if not artists:
+                search = client.search(q=query, type="artist", limit=5)
+                artists = search.get("artists", {}).get("items", [])
             if not artists:
                 return ToolResult(ok=False, action_code="MUSIC_NOT_FOUND", speak_text=f"I could not find the artist {query}.", private_note="", error="not_found")
 
-            artist = artists[0]
+            q_lower = query.lower()
+            best = artists[0]
+            for a in artists:
+                if a.get("name", "").lower() == q_lower:
+                    best = a
+                    break
+                if q_lower in a.get("name", "").lower():
+                    best = a
+                    break
+
+            artist = best
             artist_uri = artist["uri"]
             artist_name = artist.get("name", query)
 
@@ -618,9 +629,8 @@ class SpotifyController:
                     client.start_playback(device_id=target, context_uri=artist_uri)
                 else:
                     client.start_playback(context_uri=artist_uri)
-                place = f" in the {speaker_name}" if speaker_name else ""
-                shuffle_text = "Shuffling " if shuffle else "Playing "
-                return ToolResult(ok=True, action_code="MUSIC_START", speak_text=f"{shuffle_text}{artist_name}{place}.", private_note="", payload={"artist": artist_name, "spotify_uri": artist_uri})
+                label = "Shuffling" if shuffle else "Playing"
+                return ToolResult(ok=True, action_code="MUSIC_START", speak_text=f"{label} {artist_name}.", private_note="", payload={"artist": artist_name, "spotify_uri": artist_uri})
 
             return ToolResult(ok=True, action_code="MUSIC_RESULT", speak_text=f"I found {artist_name} on Spotify.", private_note="Open Spotify to start playback.", payload={"artist": artist_name, "spotify_uri": artist_uri})
         except Exception as exc:
@@ -679,9 +689,9 @@ class SpotifyController:
                     client.start_playback(device_id=target, context_uri=playlist_uri)
                 else:
                     client.start_playback(context_uri=playlist_uri)
-                place = f" in the {speaker_name}" if speaker_name else ""
-                shuffle_text = "Shuffling " if shuffle else "Playing "
-                return ToolResult(ok=True, action_code="MUSIC_START", speak_text=f"{shuffle_text}{playlist_name}{place}.", private_note="", payload={"playlist": playlist_name, "spotify_uri": playlist_uri})
+                place = ""
+                label = "Shuffling" if shuffle else "Playing"
+                return ToolResult(ok=True, action_code="MUSIC_START", speak_text=f"{label} {playlist_name}.", private_note="", payload={"playlist": playlist_name, "spotify_uri": playlist_uri})
 
             return ToolResult(ok=True, action_code="MUSIC_RESULT", speak_text=f"I found the playlist {playlist_name}.", private_note="Open Spotify to start playback.", payload={"playlist": playlist_name, "spotify_uri": playlist_uri})
         except Exception as exc:
