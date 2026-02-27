@@ -18,21 +18,10 @@ body{
   position:relative;
 }
 
-/* Full-page gradient layer */
-.bg{position:fixed;inset:0;z-index:0;pointer-events:none;transition:opacity .15s ease}
+/* Full-page WebGL gas background */
+#gas-canvas{position:fixed;inset:0;z-index:0;pointer-events:none;width:100%;height:100%}
 
-/* Audio-reactive orbs */
-.orb{
-  position:fixed;border-radius:50%;pointer-events:none;z-index:0;
-  filter:blur(110px);
-  will-change:transform,opacity;
-  transition:background 3s ease;
-}
-.orb.o1{width:55vw;height:55vw;max-width:700px;max-height:700px;top:-12%;left:-12%;background:rgba(var(--d1),.6)}
-.orb.o2{width:50vw;height:50vw;max-width:650px;max-height:650px;bottom:-12%;right:-12%;background:rgba(var(--d2),.55)}
-.orb.o3{width:30vw;height:30vw;max-width:400px;max-height:400px;top:35%;left:55%;background:rgba(var(--d1),.25)}
-
-body>*:not(.bg):not(.orb){position:relative;z-index:1}
+body>*:not(#gas-canvas){position:relative;z-index:1}
 
 /* ---- Album art ---- */
 .art-wrap{
@@ -123,10 +112,7 @@ canvas#color-canvas{display:none}
 </head>
 <body>
 
-<div class="bg" id="bg"></div>
-<div class="orb o1" id="orb1"></div>
-<div class="orb o2" id="orb2"></div>
-<div class="orb o3" id="orb3"></div>
+<canvas id="gas-canvas"></canvas>
 <canvas id="color-canvas" width="64" height="64"></canvas>
 
 <div class="art-wrap" id="art-wrap">
@@ -188,7 +174,7 @@ const transcriptEl=$('transcript'),btn=$('mic-btn'),micWrap=$('mic-wrap');
 const ring1=$('ring1'),ring2=$('ring2');
 const logEl=$('log'),statusEl=$('status'),deviceSelect=$('device-select');
 const colorCanvas=$('color-canvas'),colorCtx=colorCanvas.getContext('2d',{willReadFrequently:true});
-const bgEl=$('bg'),orb1=$('orb1'),orb2=$('orb2'),orb3=$('orb3');
+const gasCanvas=$('gas-canvas');
 
 const params=new URLSearchParams(location.search);
 const pd=params.get('device');
@@ -248,49 +234,162 @@ function applyBaseColors(c){
   document.body.style.background=`rgb(${darken(col2,.1)})`;
 }
 
+// ===== WebGL Gas Background =====
+const gl=gasCanvas.getContext('webgl',{alpha:false,antialias:false,premultipliedAlpha:false});
+let gasProgram,uTime,uRes,uCol1,uCol2,uBass,uMid,uHigh,uVol;
+
+function initGas(){
+  if(!gl)return;
+  function mkShader(type,src){
+    const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error('Shader error:',gl.getShaderInfoLog(s))}
+    return s;
+  }
+  const vs=mkShader(gl.VERTEX_SHADER,`attribute vec2 p;void main(){gl_Position=vec4(p,0,1);}`);
+  const fs=mkShader(gl.FRAGMENT_SHADER,`
+precision highp float;
+uniform float t;
+uniform vec2 res;
+uniform vec3 c1,c2;
+uniform float bass,mid,hi,vol;
+
+vec3 hash(vec3 p){
+  p=fract(p*vec3(.1031,.1030,.0973));
+  p+=dot(p,p.yxz+33.33);
+  return fract((p.xxy+p.yxx)*p.zyx);
+}
+
+float noise(vec3 p){
+  vec3 i=floor(p),f=fract(p);
+  f=f*f*(3.0-2.0*f);
+  float a=dot(hash(i),vec3(1));
+  float b=dot(hash(i+vec3(1,0,0)),vec3(1));
+  float c=dot(hash(i+vec3(0,1,0)),vec3(1));
+  float d=dot(hash(i+vec3(1,1,0)),vec3(1));
+  float e=dot(hash(i+vec3(0,0,1)),vec3(1));
+  float ff=dot(hash(i+vec3(1,0,1)),vec3(1));
+  float g=dot(hash(i+vec3(0,1,1)),vec3(1));
+  float h=dot(hash(i+vec3(1,1,1)),vec3(1));
+  return mix(mix(mix(a,b,f.x),mix(c,d,f.x),f.y),mix(mix(e,ff,f.x),mix(g,h,f.x),f.y),f.z);
+}
+
+float fbm(vec3 p){
+  float v=0.0,a=0.5;
+  vec3 shift=vec3(100);
+  for(int i=0;i<5;i++){
+    v+=a*noise(p);
+    p=p*2.0+shift;
+    a*=0.5;
+  }
+  return v;
+}
+
+float gasField(vec2 uv,float time){
+  float speed=0.08+vol*0.15;
+  float turb=1.0+hi*2.5;
+  float scale=2.5+bass*1.5;
+  vec3 p=vec3(uv*scale,time*speed);
+  float f1=fbm(p+vec3(fbm(p+vec3(time*0.03,0,0)),fbm(p+vec3(0,time*0.04,0)),0.0)*turb);
+  float f2=fbm(p*1.3+vec3(f1*1.2,time*0.05,f1*0.8));
+  return f1*0.6+f2*0.4;
+}
+
+void main(){
+  vec2 uv=gl_FragCoord.xy/res;
+  float ar=res.x/res.y;
+  vec2 p=vec2(uv.x*ar,uv.y);
+
+  float g1=gasField(p,t);
+  float g2=gasField(p+vec2(1.7,2.3),t*0.7+50.0);
+  float g3=gasField(p*0.8+vec2(3.1,0.7),t*0.5+100.0);
+
+  float wave=sin(uv.x*3.0+t*0.2+g1*4.0)*0.5+0.5;
+  wave*=0.5+bass*0.5;
+
+  vec3 baseCol=mix(c1,c2,g1);
+  vec3 accent=mix(c2,c1*1.3,g2);
+  float midShift=0.3+mid*0.5;
+  vec3 col=mix(baseCol,accent,g2*midShift);
+
+  vec3 highlight=vec3(min(c1.x*2.0,1.0),min(c1.y*2.0,1.0),min(c1.z*2.0,1.0));
+  col=mix(col,highlight,wave*g3*0.4);
+
+  float brightness=0.55+vol*0.3+bass*0.15;
+  col*=brightness;
+
+  float vignette=1.0-length((uv-0.5)*1.4);
+  vignette=smoothstep(0.0,0.7,vignette);
+  col*=0.6+vignette*0.4;
+
+  col=pow(col,vec3(0.95));
+
+  gl_FragColor=vec4(col,1.0);
+}
+  `);
+  gasProgram=gl.createProgram();
+  gl.attachShader(gasProgram,vs);gl.attachShader(gasProgram,fs);gl.linkProgram(gasProgram);
+  if(!gl.getProgramParameter(gasProgram,gl.LINK_STATUS)){console.error('Program error:',gl.getProgramInfoLog(gasProgram))}
+  gl.useProgram(gasProgram);
+  const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+  const pA=gl.getAttribLocation(gasProgram,'p');gl.enableVertexAttribArray(pA);gl.vertexAttribPointer(pA,2,gl.FLOAT,false,0,0);
+  uTime=gl.getUniformLocation(gasProgram,'t');
+  uRes=gl.getUniformLocation(gasProgram,'res');
+  uCol1=gl.getUniformLocation(gasProgram,'c1');
+  uCol2=gl.getUniformLocation(gasProgram,'c2');
+  uBass=gl.getUniformLocation(gasProgram,'bass');
+  uMid=gl.getUniformLocation(gasProgram,'mid');
+  uHigh=gl.getUniformLocation(gasProgram,'hi');
+  uVol=gl.getUniformLocation(gasProgram,'vol');
+}
+
+function resizeGas(){
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  const w=Math.floor(window.innerWidth*dpr*0.5);
+  const h=Math.floor(window.innerHeight*dpr*0.5);
+  gasCanvas.width=w;gasCanvas.height=h;
+  if(gl)gl.viewport(0,0,w,h);
+}
+window.addEventListener('resize',resizeGas);
+resizeGas();
+initGas();
+
+function parseCol(s){const a=s.split(',').map(Number);return[a[0]/255,a[1]/255,a[2]/255];}
+
+let listening=false,speaking=false;
+
 // ===== Audio-reactive render loop =====
 let reactFrame=null;
-// Smoothed values for fluid motion
 let sBass=0,sMid=0,sHigh=0,sVol=0;
+let gasStart=performance.now();
 
 function reactLoop(){
   const b=getBands();
-  // Smooth with lerp for fluid motion
-  const lerp=.18;
+  const lerp=.14;
   sBass+=(b.bass-sBass)*lerp;
   sMid+=(b.mid-sMid)*lerp;
   sHigh+=(b.high-sHigh)*lerp;
   sVol+=(b.vol-sVol)*lerp;
 
-  // Orbs react to frequency bands
-  const bassScale=1+sBass*.25;
-  const midScale=1+sMid*.18;
-  const bassOp=.35+sBass*.45;
-  const midOp=.3+sMid*.4;
-  const highOp=.15+sHigh*.35;
+  if(gl&&gasProgram){
+    const elapsed=(performance.now()-gasStart)/1000;
+    gl.useProgram(gasProgram);
+    gl.uniform1f(uTime,elapsed);
+    gl.uniform2f(uRes,gasCanvas.width,gasCanvas.height);
+    const c1=parseCol(col1),c2=parseCol(col2);
+    gl.uniform3f(uCol1,c1[0],c1[1],c1[2]);
+    gl.uniform3f(uCol2,c2[0],c2[1],c2[2]);
+    gl.uniform1f(uBass,sBass);
+    gl.uniform1f(uMid,sMid);
+    gl.uniform1f(uHigh,sHigh);
+    gl.uniform1f(uVol,sVol);
+    gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+  }
 
-  orb1.style.transform=`translate(${Math.sin(Date.now()*.0003)*30}px,${Math.cos(Date.now()*.0004)*20}px) scale(${bassScale})`;
-  orb1.style.opacity=bassOp;
-
-  orb2.style.transform=`translate(${Math.cos(Date.now()*.00025)*25}px,${Math.sin(Date.now()*.00035)*18}px) scale(${midScale})`;
-  orb2.style.opacity=midOp;
-
-  orb3.style.transform=`translate(${Math.sin(Date.now()*.0002)*20}px,${Math.cos(Date.now()*.0003)*15}px) scale(${1+sHigh*.2})`;
-  orb3.style.opacity=highOp;
-
-  // Background gradient intensity reacts to overall volume
-  const gInt=.3+sVol*.5;
-  bgEl.style.background=`
-    radial-gradient(ellipse 80% 60% at 30% 20%, rgba(${col1},${gInt}), transparent 65%),
-    radial-gradient(ellipse 70% 50% at 70% 80%, rgba(${col2},${gInt*.85}), transparent 60%),
-    radial-gradient(ellipse 50% 40% at 50% 50%, rgba(${col1},${gInt*.35}), transparent 50%)`;
-
-  // Album art glow pulses with bass
   const glowSpread=20+sBass*40;
   const glowSize=80+sBass*60;
   artWrap.style.boxShadow=`0 ${glowSpread}px ${glowSize}px rgba(${col1},${.25+sBass*.3}), 0 0 ${100+sBass*60}px rgba(${col1},${.1+sBass*.15})`;
 
-  // Mic rings (only when listening)
   if(listening){
     ring1.style.transform=`scale(${1+sVol*.3})`;ring1.style.opacity=.15+sVol*.85;
     ring1.style.boxShadow=`0 0 ${sVol*12}px ${sVol*5}px rgba(255,255,255,${sVol*.15})`;
@@ -302,14 +401,14 @@ function reactLoop(){
   reactFrame=requestAnimationFrame(reactLoop);
 }
 
-// Start audio on first interaction (browser requires user gesture)
+// Start gas animation immediately, audio enhances it
+reactLoop();
+
 function ensureAudio(){
   if(audioReady)return;
-  initAudio().then(()=>{
-    if(!reactFrame)reactLoop();
-  }).catch(()=>{});
+  initAudio().catch(e=>{console.warn('Audio init failed:',e)});
 }
-document.addEventListener('click',ensureAudio,{once:false});
+document.addEventListener('click',ensureAudio,{once:true});
 
 // ===== Color extraction =====
 function extractColors(img){
@@ -410,7 +509,6 @@ document.addEventListener('click',startKeepalive,{once:true});
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 if(!SR)statusEl.textContent='Speech API not supported.';
 let recog;if(SR){recog=new SR();recog.continuous=true;recog.interimResults=true;recog.lang='en-US'}
-let listening=false,speaking=false;
 
 function stopMicVisuals(){
   ring1.style.transform='scale(1)';ring1.style.opacity=0;ring1.style.boxShadow='none';
@@ -425,28 +523,42 @@ function setStatus(m){statusEl.textContent=m}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function addEntry(you,ziri,err){const d=document.createElement('div');d.className='entry';let h=`<div class="label you">You</div><div>${esc(you)}</div>`;if(ziri){const c=err?'err':'ziri';h+=`<div class="label ${c}" style="margin-top:5px">${err?'Error':'Ziri'}</div><div class="${c}">${esc(ziri)}</div>`}d.innerHTML=h;logEl.prepend(d)}
 
-// ===== Thinking ping sound =====
-let thinkOsc=null,thinkGain=null,thinkInterval=null;
-function startThinkPing(){
-  if(thinkOsc)return;
-  try{
-    const ctx=keepaliveCtx||new(window.AudioContext||window.webkitAudioContext)();
-    thinkGain=ctx.createGain();thinkGain.gain.value=0;thinkGain.connect(ctx.destination);
-    thinkOsc=ctx.createOscillator();thinkOsc.frequency.value=880;thinkOsc.type='sine';
-    thinkOsc.connect(thinkGain);thinkOsc.start();
-    let on=true;
-    thinkGain.gain.setValueAtTime(0.06,ctx.currentTime);
-    thinkGain.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.12);
-    thinkInterval=setInterval(()=>{
-      thinkGain.gain.setValueAtTime(0.06,ctx.currentTime);
-      thinkGain.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.12);
-    },800);
-  }catch(e){}
+// ===== Thinking chime =====
+let thinkTimer=null,thinkChimeInterval=null,thinkCtx=null;
+
+function playChime(){
+  if(!thinkCtx)return;
+  const t=thinkCtx.currentTime;
+  // Ethereal two-note chime: E5 + B5 with soft decay
+  [659.25, 987.77].forEach((freq,i)=>{
+    const osc=thinkCtx.createOscillator();
+    const gain=thinkCtx.createGain();
+    osc.type='sine';
+    osc.frequency.value=freq;
+    gain.gain.setValueAtTime(0,t);
+    gain.gain.linearRampToValueAtTime(0.04,t+0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001,t+0.5);
+    osc.connect(gain);gain.connect(thinkCtx.destination);
+    osc.start(t+i*0.08);
+    osc.stop(t+0.6);
+  });
 }
+
+function startThinkPing(){
+  // Delay 250ms — if response arrives before this, no sound plays
+  thinkTimer=setTimeout(()=>{
+    try{
+      thinkCtx=keepaliveCtx||new(window.AudioContext||window.webkitAudioContext)();
+      playChime();
+      thinkChimeInterval=setInterval(playChime,1200);
+    }catch(e){}
+  },250);
+}
+
 function stopThinkPing(){
-  if(thinkInterval){clearInterval(thinkInterval);thinkInterval=null}
-  if(thinkOsc){try{thinkOsc.stop()}catch(_){}thinkOsc=null}
-  thinkGain=null;
+  if(thinkTimer){clearTimeout(thinkTimer);thinkTimer=null}
+  if(thinkChimeInterval){clearInterval(thinkChimeInterval);thinkChimeInterval=null}
+  thinkCtx=null;
 }
 
 async function sendIntent(text){
@@ -482,7 +594,7 @@ if(recog){
 
 function startListen(){
   listening=true;btn.classList.add('listening');micWrap.classList.add('listening');setStatus('Listening...');
-  initAudio().then(()=>{if(!reactFrame)reactLoop()}).catch(()=>{});
+  initAudio().catch(()=>{});
   if(recog&&!speaking)try{recog.start()}catch(_){}
 }
 function stopListen(){

@@ -114,6 +114,42 @@ class SpotifyController:
 
         return self.settings.spotify_default_device_id
 
+    def _wake_device(self, client: Any, device_id: str | None) -> bool:
+        """Transfer playback to a device to wake it from dormant state."""
+        if not device_id:
+            return False
+        try:
+            client.transfer_playback(device_id, force_play=False)
+            import time
+            time.sleep(0.3)
+            return True
+        except Exception as exc:
+            logger.debug("Could not wake device %s: %s", device_id, exc)
+            return False
+
+    def _ensure_active_device(self, client: Any, device_id: str | None, speaker_name: str | None) -> str | None:
+        """Get a device ID and make sure it's awake."""
+        target = self._resolve_target_device(client, device_id, speaker_name)
+
+        try:
+            payload = client.devices()
+            devices = payload.get("devices", []) if isinstance(payload, dict) else []
+            has_active = any(d.get("is_active") for d in devices)
+
+            if has_active:
+                return target
+
+            wake_id = target
+            if not wake_id and devices:
+                wake_id = devices[0].get("id")
+            if wake_id:
+                self._wake_device(client, wake_id)
+                return wake_id
+        except Exception:
+            pass
+
+        return target
+
     @staticmethod
     def _build_search_query(raw_query: str) -> str:
         """Parse natural language into Spotify field-filtered search.
@@ -242,7 +278,7 @@ class SpotifyController:
             external_url = top_track.get("external_urls", {}).get("spotify")
 
             if can_control_playback:
-                target_device = self._resolve_target_device(
+                target_device = self._ensure_active_device(
                     client=client,
                     explicit_device_id=spotify_device_id,
                     speaker_name=speaker_name,
@@ -307,7 +343,7 @@ class SpotifyController:
             if current_volume is None:
                 current_volume = 50
             new_volume = max(0, min(100, int(current_volume) + int(delta_percent)))
-            target_device = self._resolve_target_device(
+            target_device = self._ensure_active_device(
                 client=client,
                 explicit_device_id=spotify_device_id,
                 speaker_name=speaker_name,
@@ -351,7 +387,7 @@ class SpotifyController:
             )
 
         try:
-            target_device = self._resolve_target_device(
+            target_device = self._ensure_active_device(
                 client=client,
                 explicit_device_id=spotify_device_id,
                 speaker_name=speaker_name,
@@ -393,7 +429,7 @@ class SpotifyController:
             )
 
         try:
-            target_device = self._resolve_target_device(
+            target_device = self._ensure_active_device(
                 client=client,
                 explicit_device_id=spotify_device_id,
                 speaker_name=speaker_name,
@@ -493,7 +529,7 @@ class SpotifyController:
             return ToolResult(ok=False, action_code="MUSIC_ERROR", speak_text="", private_note="Resume requires user auth.", error=err)
 
         try:
-            target = self._resolve_target_device(client, spotify_device_id, speaker_name)
+            target = self._ensure_active_device(client, spotify_device_id, speaker_name)
             if target:
                 client.start_playback(device_id=target)
             else:
@@ -513,7 +549,7 @@ class SpotifyController:
             return ToolResult(ok=False, action_code="MUSIC_ERROR", speak_text="", private_note="Previous requires user auth.", error=err)
 
         try:
-            target = self._resolve_target_device(client, spotify_device_id, speaker_name)
+            target = self._ensure_active_device(client, spotify_device_id, speaker_name)
             if target:
                 client.previous_track(device_id=target)
             else:
@@ -564,7 +600,7 @@ class SpotifyController:
 
         percent = max(0, min(100, int(percent)))
         try:
-            target = self._resolve_target_device(client, spotify_device_id, speaker_name)
+            target = self._ensure_active_device(client, spotify_device_id, speaker_name)
             if target:
                 client.volume(percent, device_id=target)
             else:
@@ -595,7 +631,7 @@ class SpotifyController:
             title = track.get("name", "that track")
             artist_name = ", ".join(a.get("name", "") for a in track.get("artists", []))
 
-            target = self._resolve_target_device(client, spotify_device_id, speaker_name)
+            target = self._ensure_active_device(client, spotify_device_id, speaker_name)
             if target:
                 client.add_to_queue(uri, device_id=target)
             else:
@@ -643,7 +679,7 @@ class SpotifyController:
             if can_control:
                 if shuffle:
                     client.shuffle(True)
-                target = self._resolve_target_device(client, spotify_device_id, speaker_name)
+                target = self._ensure_active_device(client, spotify_device_id, speaker_name)
                 if target:
                     client.start_playback(device_id=target, context_uri=artist_uri)
                 else:
@@ -703,7 +739,7 @@ class SpotifyController:
             if can_control:
                 if shuffle:
                     client.shuffle(True)
-                target = self._resolve_target_device(client, spotify_device_id, speaker_name)
+                target = self._ensure_active_device(client, spotify_device_id, speaker_name)
                 if target:
                     client.start_playback(device_id=target, context_uri=playlist_uri)
                 else:

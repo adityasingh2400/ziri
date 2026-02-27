@@ -94,7 +94,7 @@ class TTS:
         try:
             import httpx
             resp = httpx.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{self.settings.elevenlabs_voice_id}?output_format=mp3_22050_32",
+                f"https://api.elevenlabs.io/v1/text-to-speech/{self.settings.elevenlabs_voice_id}?output_format=mp3_44100_128",
                 headers={
                     "xi-api-key": self.settings.elevenlabs_api_key,
                     "Content-Type": "application/json",
@@ -103,8 +103,8 @@ class TTS:
                     "text": text,
                     "model_id": self.settings.elevenlabs_model_id,
                     "voice_settings": {
-                        "stability": 0.4,
-                        "similarity_boost": 0.8,
+                        "stability": 0.55,
+                        "similarity_boost": 0.85,
                         "speed": 1.2,
                     },
                 },
