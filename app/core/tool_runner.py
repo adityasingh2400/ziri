@@ -3,9 +3,12 @@ from __future__ import annotations
 from app.core.device_registry import DeviceContext
 from app.integrations.calendar_controller import CalendarController
 from app.integrations.home_scene_controller import HomeSceneController
+from app.integrations.nba import NBAController
+from app.integrations.news import NewsController
 from app.integrations.phone_bridge import PhoneBridge
 from app.integrations.reminders_bridge import RemindersBridge
 from app.integrations.spotify_controller import SpotifyController
+from app.integrations.weather import WeatherController
 from app.schemas import IntentRequest, RouterDecision, ToolResult
 
 
@@ -17,12 +20,18 @@ class ToolRunner:
         reminders: RemindersBridge,
         home_scene: HomeSceneController,
         phone_bridge: PhoneBridge,
+        weather: WeatherController,
+        nba: NBAController,
+        news: NewsController,
     ) -> None:
         self.spotify = spotify
         self.calendar = calendar
         self.reminders = reminders
         self.home_scene = home_scene
         self.phone_bridge = phone_bridge
+        self.weather = weather
+        self.nba = nba
+        self.news = news
 
     def run(
         self,
@@ -145,6 +154,27 @@ class ToolRunner:
                 private_note=decision.private_note,
                 payload={"query": decision.tool_args.get("query", req.raw_text)},
             )
+
+        if decision.tool_name == "weather.current":
+            return self.weather.get_current_weather()
+
+        if decision.tool_name == "weather.sunrise_sunset":
+            return self.weather.get_sunrise_sunset()
+
+        if decision.tool_name == "nba.scores":
+            return self.nba.get_todays_games()
+
+        if decision.tool_name == "nba.team":
+            team = str(decision.tool_args.get("team") or req.raw_text)
+            return self.nba.get_team_score(team)
+
+        if decision.tool_name == "news.headlines":
+            category = str(decision.tool_args.get("category", "general"))
+            return self.news.get_headlines(category=category)
+
+        if decision.tool_name == "news.topic":
+            query = str(decision.tool_args.get("query") or req.raw_text)
+            return self.news.get_topic_news(query)
 
         return ToolResult(
             ok=False,

@@ -61,6 +61,12 @@ class TTS:
                 json={
                     "text": text,
                     "model_id": self.settings.elevenlabs_model_id,
+                    "voice_settings": {
+                        "stability": 0.4,
+                        "similarity_boost": 0.8,
+                        "style": 0.15,
+                        "speed": 1.2,
+                    },
                 },
                 timeout=15,
             )

@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = "pNInz6obpgDQGcFmaJgB"
     elevenlabs_model_id: str = "eleven_multilingual_v2"
 
+    user_latitude: float = 40.7128
+    user_longitude: float = -74.0060
+    news_api_key: Optional[str] = None
+
 
 @lru_cache
 def get_settings() -> Settings:

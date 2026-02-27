@@ -10,6 +10,9 @@ class IntentType(str, Enum):
     INFO_QUERY = "INFO_QUERY"
     PERSONAL_REMINDER = "PERSONAL_REMINDER"
     HOME_SCENE = "HOME_SCENE"
+    WEATHER = "WEATHER"
+    SPORTS = "SPORTS"
+    NEWS = "NEWS"
     UNKNOWN = "UNKNOWN"
 
 

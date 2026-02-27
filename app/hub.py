@@ -22,10 +22,13 @@ from app.data.session_repository import (
 )
 from app.integrations.calendar_controller import CalendarController
 from app.integrations.home_scene_controller import HomeSceneController
+from app.integrations.nba import NBAController
+from app.integrations.news import NewsController
 from app.integrations.phone_bridge import PhoneBridge
 from app.integrations.reminders_bridge import RemindersBridge
 from app.integrations.spotify_controller import SpotifyController
 from app.integrations.tts import PollyTTS
+from app.integrations.weather import WeatherController
 from app.schemas import (
     IntentRequest,
     IntentResponse,
@@ -52,12 +55,18 @@ class AuraHub:
         reminders = RemindersBridge()
         home_scene = HomeSceneController(settings.scene_map_path)
         phone_bridge = PhoneBridge()
+        weather = WeatherController(settings=settings)
+        nba = NBAController()
+        news = NewsController(settings=settings)
         tool_runner = ToolRunner(
             spotify=spotify,
             calendar=calendar,
             reminders=reminders,
             home_scene=home_scene,
             phone_bridge=phone_bridge,
+            weather=weather,
+            nba=nba,
+            news=news,
         )
         tts = PollyTTS(settings=settings)
 

@@ -49,6 +49,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {"toolSpec": {"name": "home_scene", "description": "Activate a home automation scene.", "inputSchema": {"json": {"type": "object", "properties": {"scene_name": {"type": "string", "description": "Name of the scene"}}, "required": ["scene_name"]}}}},
     {"toolSpec": {"name": "private_phone_data", "description": "Fetch private/sensitive data -- displayed only on phone, never spoken aloud.", "inputSchema": {"json": {"type": "object", "properties": {"query": {"type": "string", "description": "What the user is asking for"}}, "required": ["query"]}}}},
     {"toolSpec": {"name": "general_answer", "description": "General-purpose answer for questions that don't match other tools.", "inputSchema": {"json": {"type": "object", "properties": {"query": {"type": "string", "description": "The user's question"}}, "required": ["query"]}}}},
+    {"toolSpec": {"name": "weather_current", "description": "Get the current weather conditions (temperature, conditions, wind).", "inputSchema": {"json": {"type": "object", "properties": {}}}}},
+    {"toolSpec": {"name": "weather_sunrise_sunset", "description": "Get today's sunrise and sunset times.", "inputSchema": {"json": {"type": "object", "properties": {}}}}},
+    {"toolSpec": {"name": "nba_scores", "description": "Get today's NBA game scores.", "inputSchema": {"json": {"type": "object", "properties": {}}}}},
+    {"toolSpec": {"name": "nba_team", "description": "Get the score for a specific NBA team's game today.", "inputSchema": {"json": {"type": "object", "properties": {"team": {"type": "string", "description": "Team name, e.g. Lakers, Celtics"}}, "required": ["team"]}}}},
+    {"toolSpec": {"name": "news_headlines", "description": "Get top news headlines.", "inputSchema": {"json": {"type": "object", "properties": {"category": {"type": "string", "description": "Category: general, business, technology, sports, entertainment, health, science"}}}}}},
+    {"toolSpec": {"name": "news_topic", "description": "Search news about a specific topic.", "inputSchema": {"json": {"type": "object", "properties": {"query": {"type": "string", "description": "Topic to search"}}, "required": ["query"]}}}},
 ]
 
 _TOOL_NAME_MAP: dict[str, str] = {
@@ -71,6 +77,12 @@ _TOOL_NAME_MAP: dict[str, str] = {
     "home_scene": "home.scene",
     "private_phone_data": "private.phone_data",
     "general_answer": "general.answer",
+    "weather_current": "weather.current",
+    "weather_sunrise_sunset": "weather.sunrise_sunset",
+    "nba_scores": "nba.scores",
+    "nba_team": "nba.team",
+    "news_headlines": "news.headlines",
+    "news_topic": "news.topic",
 }
 
 _TOOL_INTENT_MAP: dict[str, IntentType] = {
@@ -93,6 +105,12 @@ _TOOL_INTENT_MAP: dict[str, IntentType] = {
     "home.scene": IntentType.HOME_SCENE,
     "private.phone_data": IntentType.INFO_QUERY,
     "general.answer": IntentType.INFO_QUERY,
+    "weather.current": IntentType.WEATHER,
+    "weather.sunrise_sunset": IntentType.WEATHER,
+    "nba.scores": IntentType.SPORTS,
+    "nba.team": IntentType.SPORTS,
+    "news.headlines": IntentType.NEWS,
+    "news.topic": IntentType.NEWS,
 }
 
 _ACTION_CODES: dict[str, str] = {
@@ -115,6 +133,12 @@ _ACTION_CODES: dict[str, str] = {
     "home.scene": "SCENE_APPLY",
     "private.phone_data": "PRIVATE_NOTE",
     "general.answer": "INFO_REPLY",
+    "weather.current": "WEATHER_CURRENT",
+    "weather.sunrise_sunset": "WEATHER_SUN",
+    "nba.scores": "NBA_SCORES",
+    "nba.team": "NBA_SCORES",
+    "news.headlines": "NEWS_HEADLINES",
+    "news.topic": "NEWS_TOPIC",
 }
 
 # ======================================================================
@@ -235,6 +259,44 @@ _SCENE_PHRASES = [
 _PRIVATE_PHRASES = [
     "read my texts", "texts", "messages", "otp", "code from sms",
     "read my messages", "show my texts",
+]
+
+_WEATHER_PHRASES = [
+    "weather", "what's the weather", "what is the weather",
+    "how's the weather", "temperature", "how cold is it",
+    "how hot is it", "is it cold", "is it hot", "is it raining",
+    "do i need a jacket", "forecast",
+]
+
+_SUNRISE_SUNSET_PHRASES = [
+    "sunrise", "sunset", "when does the sun set", "when does the sun rise",
+    "what time is sunrise", "what time is sunset",
+    "when is sunrise", "when is sunset",
+    "sun times",
+]
+
+_NBA_PHRASES = [
+    "nba scores", "nba games", "basketball scores",
+    "nba games today", "basketball games today",
+    "who's playing tonight", "nba tonight",
+]
+
+_NBA_TEAM_PREFIXES = [
+    "how did the ", "how are the ", "did the ",
+    "score for the ", "score for ",
+]
+_NBA_TEAM_SUFFIXES = [" score", " game"]
+
+_NEWS_PHRASES = [
+    "news", "headlines", "top stories", "what's happening",
+    "what's going on", "what's in the news",
+    "tell me the news", "news briefing", "brief me",
+    "what's going on in the world",
+]
+
+_NEWS_TOPIC_PREFIXES = [
+    "news about ", "news on ", "what's happening with ",
+    "any news about ", "any news on ",
 ]
 
 
@@ -424,6 +486,39 @@ class Brain:
                 speak_text="Applying that home scene.",
                 confidence=0.8,
             )
+
+        # -- Weather --
+        if self._match_contains(text, _WEATHER_PHRASES):
+            return self._decision("weather.current", {})
+
+        # -- Sunrise / Sunset --
+        if self._match_contains(text, _SUNRISE_SUNSET_PHRASES):
+            return self._decision("weather.sunrise_sunset", {})
+
+        # -- NBA team-specific (before general NBA) --
+        for prefix in _NBA_TEAM_PREFIXES:
+            if text.startswith(prefix) and len(text) > len(prefix):
+                team = req.raw_text[len(prefix):].strip()
+                for suf in _NBA_TEAM_SUFFIXES + [""]:
+                    if team.lower().endswith(suf):
+                        team = team[:len(team)-len(suf)].strip()
+                        break
+                if team:
+                    return self._decision("nba.team", {"team": team})
+
+        # -- NBA scores --
+        if self._match_contains(text, _NBA_PHRASES):
+            return self._decision("nba.scores", {})
+
+        # -- News topic --
+        for prefix in _NEWS_TOPIC_PREFIXES:
+            if text.startswith(prefix) and len(text) > len(prefix):
+                query = req.raw_text[len(prefix):].strip()
+                return self._decision("news.topic", {"query": query})
+
+        # -- News headlines --
+        if self._match_contains(text, _NEWS_PHRASES):
+            return self._decision("news.headlines", {})
 
         # -- Generic "play ..." catch-all (must be last music match) --
         if text.startswith("play ") and len(text) > 5:

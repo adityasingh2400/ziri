@@ -13,6 +13,7 @@ from app.settings import Settings
 from app.core.brain import Brain
 from app.core.device_registry import DeviceContext
 from app.core.memory import MemoryStore
+from app.core.personality import rewrite_response
 from app.core.tool_runner import ToolRunner
 from app.integrations.tts import PollyTTS
 from app.schemas import IntentRequest, IntentResponse, RouterDecision, ToolResult
@@ -72,9 +73,17 @@ class AuraOrchestrator:
         route = state["route_decision"]
         tool_result = state["tool_result"]
 
-        speak_text = tool_result.speak_text or route.speak_text
+        raw_speak = tool_result.speak_text or route.speak_text
         private_note = tool_result.private_note or route.private_note
         action_code = tool_result.action_code or route.action_code or "NO_OP"
+
+        speak_text = rewrite_response(
+            bedrock_client=self.brain._bedrock,
+            model_id=self.settings.bedrock_model_id,
+            raw_text=raw_speak,
+            action_code=action_code,
+            user_text=req.raw_text,
+        )
 
         audio_url = None
         if self.settings.return_audio_url and speak_text:
@@ -124,7 +133,6 @@ class AuraOrchestrator:
             output = self.graph.invoke({"request": request, "device_context": device_context})
             return output["response"], output["route_decision"], output["tool_result"]
 
-        # Fallback for environments where LangGraph is not installed yet.
         routed = self._route_node({"request": request, "device_context": device_context})
         executed = self._execute_node(
             {
