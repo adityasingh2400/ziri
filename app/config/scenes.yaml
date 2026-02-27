@@ -1,0 +1,21 @@
+scenes:
+  movie mode:
+    lights:
+      brightness: 20
+      color: warm
+    media:
+      input: AppleTV
+      volume: 35
+  goodnight:
+    lights:
+      all_off: true
+    security:
+      arm: home
+    climate:
+      target_temp_f: 68
+  focus:
+    lights:
+      brightness: 70
+      color: neutral
+    notifications:
+      do_not_disturb: true

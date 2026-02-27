@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ziri</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--d1:80,60,120;--d2:40,30,80;--text:#f0f0f4;--muted:rgba(255,255,255,.45)}
+html,body{height:100%;overflow-x:hidden}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,sans-serif;
+  color:var(--text);
+  display:flex;flex-direction:column;align-items:center;
+  padding:50px 20px 80px;
+  background:rgb(var(--d2));
+  transition:background 3s ease;
+  position:relative;
+}
+
+/* Full-page gradient layer */
+.bg{position:fixed;inset:0;z-index:0;pointer-events:none;transition:opacity .15s ease}
+
+/* Audio-reactive orbs */
+.orb{
+  position:fixed;border-radius:50%;pointer-events:none;z-index:0;
+  filter:blur(110px);
+  will-change:transform,opacity;
+  transition:background 3s ease;
+}
+.orb.o1{width:55vw;height:55vw;max-width:700px;max-height:700px;top:-12%;left:-12%;background:rgba(var(--d1),.6)}
+.orb.o2{width:50vw;height:50vw;max-width:650px;max-height:650px;bottom:-12%;right:-12%;background:rgba(var(--d2),.55)}
+.orb.o3{width:30vw;height:30vw;max-width:400px;max-height:400px;top:35%;left:55%;background:rgba(var(--d1),.25)}
+
+body>*:not(.bg):not(.orb){position:relative;z-index:1}
+
+/* ---- Album art ---- */
+.art-wrap{
+  width:280px;height:280px;border-radius:22px;overflow:hidden;
+  position:relative;margin-bottom:28px;
+  transition:box-shadow 3s ease;
+}
+.art-wrap img{
+  position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+  transition:opacity 1.6s ease,transform 1.6s ease;
+}
+.art-wrap img.old{opacity:0;transform:scale(1.06)}
+.art-wrap img.current{opacity:1;transform:scale(1)}
+.art-placeholder{
+  width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,.05);color:var(--muted);font-size:.85rem;
+}
+
+/* ---- Track info ---- */
+.track-title{
+  font-size:1.35rem;font-weight:700;letter-spacing:-.03em;
+  text-align:center;max-width:400px;margin-bottom:6px;
+  transition:opacity .8s ease,transform .8s ease;
+}
+.track-artist{font-size:.95rem;color:var(--muted);text-align:center;margin-bottom:3px;transition:opacity .8s ease,transform .8s ease}
+.track-album{font-size:.76rem;color:var(--muted);opacity:.5;text-align:center;transition:opacity .8s ease}
+.track-title.out,.track-artist.out{opacity:0;transform:translateY(8px)}
+
+/* ---- Progress ---- */
+.progress-wrap{width:280px;display:flex;align-items:center;gap:10px;margin-top:18px;margin-bottom:36px}
+.progress-bar{flex:1;height:3px;background:rgba(255,255,255,.1);border-radius:2px;overflow:hidden}
+.progress-fill{
+  height:100%;border-radius:2px;width:0;
+  background:rgba(255,255,255,.55);
+  transition:width .4s linear;
+}
+.progress-time{font-size:.65rem;color:var(--muted);min-width:30px;text-align:center;font-variant-numeric:tabular-nums}
+
+/* ---- Mic ---- */
+.mic-section{display:flex;flex-direction:column;align-items:center;margin-bottom:14px}
+#transcript{
+  min-height:24px;max-width:380px;text-align:center;
+  font-size:.95rem;line-height:1.4;
+  opacity:0;transform:translateY(5px);
+  transition:opacity .4s ease,transform .4s ease;
+  pointer-events:none;margin-bottom:10px;
+}
+#transcript.visible{opacity:1;transform:translateY(0)}
+#transcript.fading{opacity:0;transform:translateY(-4px);transition:opacity .5s ease .4s,transform .5s ease .4s}
+#transcript .interim{color:rgba(255,255,255,.4)}
+#transcript .final{color:rgba(255,255,255,.9)}
+
+.mic-wrap{
+  position:relative;width:100px;height:100px;
+  display:flex;align-items:center;justify-content:center;margin-bottom:10px;
+}
+.mic-ring{position:absolute;inset:0;border-radius:50%;border:1.5px solid transparent;pointer-events:none}
+.mic-ring.r1,.mic-ring.r2{transform:scale(1);opacity:0}
+.mic-wrap.listening .mic-ring{border-color:rgba(255,255,255,.3);opacity:1}
+#mic-btn{
+  width:56px;height:56px;border-radius:50%;
+  border:1.5px solid rgba(255,255,255,.15);
+  background:rgba(255,255,255,.06);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:all .3s ease;position:relative;z-index:2;
+}
+#mic-btn:hover{border-color:rgba(255,255,255,.3);background:rgba(255,255,255,.1)}
+#mic-btn.listening{border-color:rgba(255,255,255,.4);box-shadow:0 0 24px rgba(255,255,255,.12)}
+#mic-btn svg{width:22px;height:22px;fill:rgba(255,255,255,.5);transition:fill .3s}
+#mic-btn.listening svg{fill:rgba(255,255,255,.85)}
+
+.controls-row{display:flex;gap:8px;align-items:center;font-size:.72rem;color:var(--muted);margin-bottom:10px}
+.controls-row select{background:rgba(255,255,255,.06);color:var(--text);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:4px 10px;font-size:.72rem}
+.status-line{font-size:.68rem;color:var(--muted);min-height:14px;margin-bottom:16px}
+
+/* ---- Log ---- */
+#log{width:100%;max-width:380px;display:flex;flex-direction:column;gap:8px}
+.entry{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:12px 14px;font-size:.8rem;line-height:1.4;animation:fadeIn .35s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.entry .label{font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:3px}
+.entry .you{color:rgba(255,255,255,.7)}
+.entry .ziri{color:#4ade80}
+.err{color:#f87171}
+
+canvas#color-canvas{display:none}
+</style>
+</head>
+<body>
+
+<div class="bg" id="bg"></div>
+<div class="orb o1" id="orb1"></div>
+<div class="orb o2" id="orb2"></div>
+<div class="orb o3" id="orb3"></div>
+<canvas id="color-canvas" width="64" height="64"></canvas>
+
+<div class="art-wrap" id="art-wrap">
+  <div class="art-placeholder" id="art-placeholder">No song playing</div>
+</div>
+
+<div class="track-title" id="track-title"></div>
+<div class="track-artist" id="track-artist"></div>
+<div class="track-album" id="track-album"></div>
+
+<div class="progress-wrap">
+  <span class="progress-time" id="prog-elapsed">--:--</span>
+  <div class="progress-bar"><div class="progress-fill" id="prog-fill"></div></div>
+  <span class="progress-time" id="prog-total">--:--</span>
+</div>
+
+<div class="mic-section">
+  <div id="transcript"></div>
+  <div class="mic-wrap" id="mic-wrap">
+    <div class="mic-ring r1" id="ring1"></div>
+    <div class="mic-ring r2" id="ring2"></div>
+    <button id="mic-btn" aria-label="Toggle microphone">
+      <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 003-3V5a3 3 0 10-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 0014 0h-2zm-4 8.93A7.001 7.001 0 0012 20a7.001 7.001 0 00-1-.07V22h2v-2.07z"/></svg>
+    </button>
+  </div>
+  <div class="controls-row">
+    <label for="device-select">Device:</label>
+    <select id="device-select">
+      <option value="Browser_Mac">Mac</option>
+      <option value="Browser_iPhone">iPhone</option>
+    </select>
+  </div>
+  <p class="status-line" id="status"></p>
+</div>
+
+<div id="log"></div>
+
+<script>
+(function(){
+const $=id=>document.getElementById(id);
+const artWrap=$('art-wrap'),artPlaceholder=$('art-placeholder');
+const trackTitle=$('track-title'),trackArtist=$('track-artist'),trackAlbum=$('track-album');
+const progFill=$('prog-fill'),progElapsed=$('prog-elapsed'),progTotal=$('prog-total');
+const transcriptEl=$('transcript'),btn=$('mic-btn'),micWrap=$('mic-wrap');
+const ring1=$('ring1'),ring2=$('ring2');
+const logEl=$('log'),statusEl=$('status'),deviceSelect=$('device-select');
+const colorCanvas=$('color-canvas'),colorCtx=colorCanvas.getContext('2d',{willReadFrequently:true});
+const bgEl=$('bg'),orb1=$('orb1'),orb2=$('orb2'),orb3=$('orb3');
+
+const params=new URLSearchParams(location.search);
+const pd=params.get('device');
+if(pd){let f=false;for(const o of deviceSelect.options){if(o.value===pd){o.selected=true;f=true;break}}if(!f){const o=document.createElement('option');o.value=pd;o.textContent=pd;o.selected=true;deviceSelect.appendChild(o)}}
+
+// ===== Audio analyser (always running for music reactivity) =====
+let audioCtx,analyser,micSrc,freqData,timeData;
+let audioReady=false;
+
+function initAudio(){
+  if(audioCtx)return Promise.resolve();
+  return navigator.mediaDevices.getUserMedia({audio:true}).then(s=>{
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    analyser=audioCtx.createAnalyser();
+    analyser.fftSize=512;
+    analyser.smoothingTimeConstant=.75;
+    micSrc=audioCtx.createMediaStreamSource(s);
+    micSrc.connect(analyser);
+    freqData=new Uint8Array(analyser.frequencyBinCount);
+    timeData=new Uint8Array(analyser.fftSize);
+    audioReady=true;
+  });
+}
+
+function getBands(){
+  if(!audioReady)return{bass:0,mid:0,high:0,vol:0};
+  analyser.getByteFrequencyData(freqData);
+  const len=freqData.length;
+  let bass=0,mid=0,high=0,total=0;
+  const bassEnd=Math.floor(len*.12);
+  const midEnd=Math.floor(len*.45);
+  for(let i=0;i<len;i++){
+    const v=freqData[i]/255;
+    total+=v;
+    if(i<bassEnd)bass+=v;
+    else if(i<midEnd)mid+=v;
+    else high+=v;
+  }
+  return{
+    bass:bass/(bassEnd||1),
+    mid:mid/((midEnd-bassEnd)||1),
+    high:high/((len-midEnd)||1),
+    vol:total/len
+  };
+}
+
+// ===== Stored colors =====
+let col1='80,60,120',col2='40,30,80';
+
+function darken(rgb,f){return rgb.split(',').map(v=>Math.round(Number(v)*f)).join(',')}
+
+function applyBaseColors(c){
+  col1=c?c.d1:'80,60,180';
+  col2=c?c.d2:'40,30,100';
+  document.documentElement.style.setProperty('--d1',col1);
+  document.documentElement.style.setProperty('--d2',col2);
+  document.body.style.background=`rgb(${darken(col2,.1)})`;
+}
+
+// ===== Audio-reactive render loop =====
+let reactFrame=null;
+// Smoothed values for fluid motion
+let sBass=0,sMid=0,sHigh=0,sVol=0;
+
+function reactLoop(){
+  const b=getBands();
+  // Smooth with lerp for fluid motion
+  const lerp=.18;
+  sBass+=(b.bass-sBass)*lerp;
+  sMid+=(b.mid-sMid)*lerp;
+  sHigh+=(b.high-sHigh)*lerp;
+  sVol+=(b.vol-sVol)*lerp;
+
+  // Orbs react to frequency bands
+  const bassScale=1+sBass*.25;
+  const midScale=1+sMid*.18;
+  const bassOp=.35+sBass*.45;
+  const midOp=.3+sMid*.4;
+  const highOp=.15+sHigh*.35;
+
+  orb1.style.transform=`translate(${Math.sin(Date.now()*.0003)*30}px,${Math.cos(Date.now()*.0004)*20}px) scale(${bassScale})`;
+  orb1.style.opacity=bassOp;
+
+  orb2.style.transform=`translate(${Math.cos(Date.now()*.00025)*25}px,${Math.sin(Date.now()*.00035)*18}px) scale(${midScale})`;
+  orb2.style.opacity=midOp;
+
+  orb3.style.transform=`translate(${Math.sin(Date.now()*.0002)*20}px,${Math.cos(Date.now()*.0003)*15}px) scale(${1+sHigh*.2})`;
+  orb3.style.opacity=highOp;
+
+  // Background gradient intensity reacts to overall volume
+  const gInt=.3+sVol*.5;
+  bgEl.style.background=`
+    radial-gradient(ellipse 80% 60% at 30% 20%, rgba(${col1},${gInt}), transparent 65%),
+    radial-gradient(ellipse 70% 50% at 70% 80%, rgba(${col2},${gInt*.85}), transparent 60%),
+    radial-gradient(ellipse 50% 40% at 50% 50%, rgba(${col1},${gInt*.35}), transparent 50%)`;
+
+  // Album art glow pulses with bass
+  const glowSpread=20+sBass*40;
+  const glowSize=80+sBass*60;
+  artWrap.style.boxShadow=`0 ${glowSpread}px ${glowSize}px rgba(${col1},${.25+sBass*.3}), 0 0 ${100+sBass*60}px rgba(${col1},${.1+sBass*.15})`;
+
+  // Mic rings (only when listening)
+  if(listening){
+    ring1.style.transform=`scale(${1+sVol*.3})`;ring1.style.opacity=.15+sVol*.85;
+    ring1.style.boxShadow=`0 0 ${sVol*12}px ${sVol*5}px rgba(255,255,255,${sVol*.15})`;
+    ring2.style.transform=`scale(${1+sVol*.45})`;ring2.style.opacity=.08+sVol*.5;
+    ring2.style.boxShadow=`0 0 ${sVol*16}px ${sVol*6}px rgba(255,255,255,${sVol*.1})`;
+    btn.style.boxShadow=`0 0 ${3+sVol*12}px ${sVol*6}px rgba(255,255,255,${.06+sVol*.12})`;
+  }
+
+  reactFrame=requestAnimationFrame(reactLoop);
+}
+
+// Start audio on first interaction (browser requires user gesture)
+function ensureAudio(){
+  if(audioReady)return;
+  initAudio().then(()=>{
+    if(!reactFrame)reactLoop();
+  }).catch(()=>{});
+}
+document.addEventListener('click',ensureAudio,{once:false});
+
+// ===== Color extraction =====
+function extractColors(img){
+  try{
+    colorCanvas.width=64;colorCanvas.height=64;
+    colorCtx.drawImage(img,0,0,64,64);
+    const data=colorCtx.getImageData(0,0,64,64).data;
+    const px=[];
+    for(let i=0;i<data.length;i+=4){
+      const r=data[i],g=data[i+1],b=data[i+2];
+      const bri=r*.299+g*.587+b*.114;
+      if(bri<20||bri>240)continue;
+      const sat=Math.max(r,g,b)-Math.min(r,g,b);
+      if(sat<15)continue;
+      px.push([r,g,b,sat]);
+    }
+    if(px.length<10)return null;
+    px.sort((a,b)=>b[3]-a[3]);
+    const top=px.slice(0,Math.min(px.length,100));
+    const h=Math.floor(top.length/2);
+    let r1=0,g1=0,b1=0,r2=0,g2=0,b2=0;
+    for(let i=0;i<h;i++){r1+=top[i][0];g1+=top[i][1];b1+=top[i][2]}
+    for(let i=h;i<top.length;i++){r2+=top[i][0];g2+=top[i][1];b2+=top[i][2]}
+    const n1=h||1,n2=(top.length-h)||1;
+    return{
+      d1:`${Math.round(r1/n1)},${Math.round(g1/n1)},${Math.round(b1/n1)}`,
+      d2:`${Math.round(r2/n2)},${Math.round(g2/n2)},${Math.round(b2/n2)}`
+    };
+  }catch(e){return null}
+}
+
+// ===== Now Playing =====
+let curUri='',curArt='';
+let pMs=0,dMs=0,pTs=0,npPlaying=false;
+function fmt(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60),sec=s%60;return`${m}:${sec<10?'0':''}${sec}`}
+function tick(){
+  if(!dMs)return;let e=pMs;if(npPlaying)e+=Date.now()-pTs;e=Math.min(e,dMs);
+  progFill.style.width=(e/dMs*100)+'%';progElapsed.textContent=fmt(e);progTotal.textContent=fmt(dMs);
+}
+setInterval(tick,400);
+
+async function poll(){
+  try{
+    const r=await fetch('/spotify/now-playing');const d=await r.json();
+    if(!d.playing){
+      if(curUri){
+        trackTitle.textContent='';trackArtist.textContent='';trackAlbum.textContent='';
+        progFill.style.width='0';progElapsed.textContent='--:--';progTotal.textContent='--:--';
+        artPlaceholder.style.display='flex';curUri='';applyBaseColors(null);
+      }
+      return;
+    }
+    pMs=d.progress_ms||0;dMs=d.duration_ms||0;pTs=Date.now();npPlaying=d.is_playing;tick();
+    if(d.spotify_uri===curUri)return;
+    curUri=d.spotify_uri||'';
+
+    // Smooth text transition
+    trackTitle.classList.add('out');trackArtist.classList.add('out');trackAlbum.style.opacity='0';
+    setTimeout(()=>{
+      trackTitle.textContent=d.track||'';trackArtist.textContent=d.artist||'';trackAlbum.textContent=d.album||'';
+      trackTitle.classList.remove('out');trackArtist.classList.remove('out');trackAlbum.style.opacity='.5';
+    },500);
+
+    // Crossfade album art
+    if(d.album_art&&d.album_art!==curArt){
+      curArt=d.album_art;artPlaceholder.style.display='none';
+      const img=new Image();img.crossOrigin='anonymous';
+      img.onload=()=>{
+        const old=artWrap.querySelectorAll('img');old.forEach(i=>i.classList.add('old'));
+        img.classList.add('current');artWrap.appendChild(img);
+        const c=extractColors(img);
+        applyBaseColors(c);
+        setTimeout(()=>{old.forEach(i=>{if(i.parentNode)i.parentNode.removeChild(i)})},1800);
+      };
+      img.src='/spotify/art-proxy?url='+encodeURIComponent(d.album_art);
+    }
+  }catch(e){}
+}
+poll();setInterval(poll,3000);
+
+// ===== Speech =====
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+if(!SR)statusEl.textContent='Speech API not supported.';
+let recog;if(SR){recog=new SR();recog.continuous=true;recog.interimResults=true;recog.lang='en-US'}
+let listening=false,speaking=false;
+
+function stopMicVisuals(){
+  ring1.style.transform='scale(1)';ring1.style.opacity=0;ring1.style.boxShadow='none';
+  ring2.style.transform='scale(1)';ring2.style.opacity=0;ring2.style.boxShadow='none';
+  btn.style.boxShadow='none';
+}
+
+let fadeT=null;
+function showTx(t,fin){if(fadeT){clearTimeout(fadeT);fadeT=null}transcriptEl.className='visible';transcriptEl.innerHTML=`<span class="${fin?'final':'interim'}">${esc(t)}</span>`}
+function fadeTx(){fadeT=setTimeout(()=>{transcriptEl.className='fading';setTimeout(()=>{transcriptEl.className='';transcriptEl.innerHTML=''},1200)},800)}
+function setStatus(m){statusEl.textContent=m}
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function addEntry(you,ziri,err){const d=document.createElement('div');d.className='entry';let h=`<div class="label you">You</div><div>${esc(you)}</div>`;if(ziri){const c=err?'err':'ziri';h+=`<div class="label ${c}" style="margin-top:5px">${err?'Error':'Ziri'}</div><div class="${c}">${esc(ziri)}</div>`}d.innerHTML=h;logEl.prepend(d)}
+
+async function sendIntent(text){
+  showTx(text,true);setStatus('Thinking...');
+  const body={user_id:'Aditya',device_id:deviceSelect.value,room:deviceSelect.value.replace('Browser_',''),raw_text:text,timestamp:new Date().toISOString()};
+  try{
+    const r=await fetch('/intent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();const spoken=d.speak_text||d.private_note||'(no response)';
+    addEntry(text,spoken,!r.ok);fadeTx();
+    if(d.speak_text&&'speechSynthesis' in window){
+      speaking=true;if(recog)try{recog.stop()}catch(_){}
+      const u=new SpeechSynthesisUtterance(d.speak_text);
+      u.onend=u.onerror=()=>{speaking=false;if(listening&&recog)try{recog.start()}catch(_){}setStatus(listening?'Listening...':'')};
+      speechSynthesis.speak(u);setStatus('Speaking...');
+    }else{setStatus(listening?'Listening...':'')}
+    setTimeout(poll,600);
+  }catch(e){addEntry(text,e.message,true);fadeTx();setStatus(listening?'Listening...':'')}
+}
+
+if(recog){
+  recog.onresult=e=>{if(speaking)return;let interim='';for(let i=e.resultIndex;i<e.results.length;i++){const t=e.results[i][0].transcript.trim();if(e.results[i].isFinal){if(t&&!speaking)sendIntent(t)}else{interim+=t}}if(interim&&!speaking)showTx(interim,false)};
+  recog.onerror=e=>{if(e.error==='no-speech'||e.error==='aborted')return;setStatus('Mic error: '+e.error)};
+  recog.onend=()=>{if(listening&&!speaking)try{recog.start()}catch(_){}};
+}
+
+function startListen(){
+  listening=true;btn.classList.add('listening');micWrap.classList.add('listening');setStatus('Listening...');
+  initAudio().then(()=>{if(!reactFrame)reactLoop()}).catch(()=>{});
+  if(recog&&!speaking)try{recog.start()}catch(_){}
+}
+function stopListen(){
+  listening=false;btn.classList.remove('listening');micWrap.classList.remove('listening');setStatus('');
+  stopMicVisuals();
+  if(recog)recog.stop();transcriptEl.className='';transcriptEl.innerHTML='';
+}
+btn.addEventListener('click',()=>{if(listening)stopListen();else startListen()});
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+devices:
+  iPhone_Kitchen:
+    room_name: Kitchen
+    default_speaker: iPhone
+  iPhone_Bedroom:
+    room_name: Bedroom
+    default_speaker: iPhone
+  iPhone_Office:
+    room_name: Office
+    default_speaker: MacBook
+  Browser_Mac:
+    room_name: Office
+    default_speaker: MacBook
+  Browser_iPhone:
+    room_name: Kitchen
+    default_speaker: iPhone
+
+speakers:
+  iPhone:
+    spotify_device_id: "36b3806c430bf6a3b88f806f1c3658b42136fa6c"
+  MacBook:
+    spotify_device_id: "fd557e1cef8f2c78075e67c16c90d6829f20cf38"
