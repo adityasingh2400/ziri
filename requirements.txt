@@ -13,6 +13,8 @@ pyyaml>=6.0.2
 python-dateutil>=2.9.0
 httpx>=0.27.0
 aiofiles>=24.1.0
+langfuse>=2.0
+tiktoken>=0.7
 
 # Always-on listener
 openwakeword>=0.6.0

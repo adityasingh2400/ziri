@@ -9,7 +9,9 @@ import boto3
 
 from app.settings import Settings
 from app.core.device_registry import DeviceContext
+from app.core.embeddings import embed_text
 from app.core.memory import MemoryStore
+from app.core.tracing import trace_llm_call
 from app.schemas import IntentRequest, IntentType, RouterDecision
 
 logger = logging.getLogger(__name__)
@@ -319,6 +321,182 @@ _DATE_PHRASES = [
 ]
 
 
+# ======================================================================
+# Standalone deterministic routing (importable by supervisor)
+# ======================================================================
+
+def _match_exact(text: str, phrases: list[str]) -> bool:
+    return text in phrases
+
+
+def _match_contains(text: str, phrases: list[str]) -> bool:
+    return any(p in text for p in phrases)
+
+
+def _make_decision(tool_name: str, tool_args: dict[str, Any], confidence: float = 0.95) -> RouterDecision:
+    return RouterDecision(
+        intent_type=_TOOL_INTENT_MAP.get(tool_name, IntentType.INFO_QUERY),
+        tool_name=tool_name,
+        tool_args=tool_args,
+        action_code=_ACTION_CODES.get(tool_name, "NO_OP"),
+        confidence=confidence,
+    )
+
+
+def deterministic_route(
+    raw_text: str, last_music_context: dict[str, Any] | None = None,
+) -> RouterDecision | None:
+    """Module-level deterministic phrase matcher, usable without a Brain instance."""
+    last_music_context = last_music_context or {}
+    text = raw_text.lower().strip().rstrip("?.!,")
+
+    if any(text == p or text.startswith(p) for p in _REPLAY_PHRASES):
+        previous_query = None
+        tp = last_music_context.get("tool_payload")
+        if isinstance(tp, dict):
+            previous_query = tp.get("title") or tp.get("spotify_uri")
+        query = previous_query or "my last track"
+        return _make_decision("spotify.play_query", {"query": query}, confidence=0.9)
+
+    if _match_exact(text, _PAUSE_PHRASES):
+        return _make_decision("spotify.pause", {})
+    if _match_exact(text, _RESUME_PHRASES):
+        return _make_decision("spotify.resume", {})
+    if _match_exact(text, _SKIP_PHRASES):
+        return _make_decision("spotify.skip", {})
+    if _match_exact(text, _PREVIOUS_PHRASES):
+        return _make_decision("spotify.previous", {})
+
+    vol_match = _SET_VOLUME_RE.match(text)
+    if vol_match:
+        return _make_decision("spotify.set_volume", {"percent": int(vol_match.group(1))})
+    if _match_exact(text, _VOLUME_UP_PHRASES):
+        return _make_decision("spotify.adjust_volume", {"delta_percent": 15})
+    if _match_exact(text, _VOLUME_DOWN_PHRASES):
+        return _make_decision("spotify.adjust_volume", {"delta_percent": -15})
+
+    for prefix in _SHUFFLE_PLAYLIST_PREFIXES:
+        if text.startswith(prefix) and len(text) > len(prefix):
+            query = raw_text[len(prefix):].strip()
+            return _make_decision("spotify.play_playlist", {"query": query, "shuffle": True})
+    for prefix in _SHUFFLE_ARTIST_PREFIXES:
+        if text.startswith(prefix) and len(text) > len(prefix):
+            query = raw_text[len(prefix):].strip()
+            return _make_decision("spotify.play_artist", {"query": query, "shuffle": True})
+
+    if _match_exact(text, _SHUFFLE_OFF_PHRASES):
+        return _make_decision("spotify.shuffle", {"state": False})
+    if _match_exact(text, _SHUFFLE_ON_PHRASES):
+        return _make_decision("spotify.shuffle", {"state": True})
+    if _match_exact(text, _REPEAT_OFF_PHRASES):
+        return _make_decision("spotify.repeat", {"mode": "off"})
+    if _match_exact(text, _REPEAT_ON_PHRASES):
+        return _make_decision("spotify.repeat", {"mode": "track"})
+    if _match_exact(text, _WHATS_PLAYING_PHRASES):
+        return _make_decision("spotify.current_track", {})
+    if _match_exact(text, _LIKE_PHRASES):
+        return _make_decision("spotify.like", {})
+
+    for prefix in _QUEUE_PREFIXES:
+        if text.startswith(prefix) and len(text) > len(prefix):
+            query = raw_text[len(prefix):].strip()
+            return _make_decision("spotify.queue", {"query": query})
+    for prefix in _PLAY_PLAYLIST_PREFIXES:
+        if text.startswith(prefix) and len(text) > len(prefix):
+            query = raw_text[len(prefix):].strip()
+            return _make_decision("spotify.play_playlist", {"query": query})
+    for prefix in _PLAY_ARTIST_PREFIXES:
+        if text.startswith(prefix) and len(text) > len(prefix):
+            query = raw_text[len(prefix):].strip()
+            return _make_decision("spotify.play_artist", {"query": query})
+
+    if _match_contains(text, _PRIVATE_PHRASES):
+        return RouterDecision(
+            intent_type=IntentType.INFO_QUERY,
+            tool_name="private.phone_data",
+            tool_args={"query": raw_text},
+            action_code="PRIVATE_NOTE",
+            speak_text="",
+            private_note="Fetching private message summary to display on phone.",
+            confidence=0.85,
+            requires_private_display=True,
+        )
+
+    if _match_contains(text, _CALENDAR_PHRASES):
+        return _make_decision("calendar.today", {})
+
+    if any(k in text for k in _REMINDER_MARKERS):
+        reminder_text = raw_text
+        marker = "remind me to"
+        if marker in text:
+            reminder_text = raw_text.lower().split(marker, maxsplit=1)[1].strip()
+        return RouterDecision(
+            intent_type=IntentType.PERSONAL_REMINDER,
+            tool_name="reminders.create",
+            tool_args={"text": reminder_text},
+            action_code="REMINDER_CREATE",
+            speak_text="Okay, I will add that reminder.",
+            confidence=0.85,
+        )
+
+    if _match_contains(text, _SCENE_PHRASES):
+        return RouterDecision(
+            intent_type=IntentType.HOME_SCENE,
+            tool_name="home.scene",
+            tool_args={"scene_name": raw_text},
+            action_code="SCENE_APPLY",
+            speak_text="Applying that home scene.",
+            confidence=0.8,
+        )
+
+    if _match_exact(text, _TIME_PHRASES):
+        return _make_decision("time.now", {})
+    if _match_exact(text, _DATE_PHRASES):
+        return _make_decision("time.date", {})
+    if _match_contains(text, _WEATHER_PHRASES):
+        return _make_decision("weather.current", {})
+    if _match_contains(text, _SUNRISE_SUNSET_PHRASES):
+        return _make_decision("weather.sunrise_sunset", {})
+
+    for prefix in _NBA_TEAM_PREFIXES:
+        if text.startswith(prefix) and len(text) > len(prefix):
+            team = raw_text[len(prefix):].strip()
+            for suf in _NBA_TEAM_SUFFIXES + [""]:
+                if team.lower().endswith(suf):
+                    team = team[:len(team)-len(suf)].strip()
+                    break
+            if team:
+                return _make_decision("nba.team", {"team": team})
+
+    if _match_contains(text, _NBA_PHRASES):
+        return _make_decision("nba.scores", {})
+
+    for prefix in _NEWS_TOPIC_PREFIXES:
+        if text.startswith(prefix) and len(text) > len(prefix):
+            query = raw_text[len(prefix):].strip()
+            return _make_decision("news.topic", {"query": query})
+
+    if _match_contains(text, _NEWS_PHRASES):
+        return _make_decision("news.headlines", {})
+
+    if text.startswith("play ") and len(text) > 5:
+        query = raw_text[5:].strip() or "top tracks"
+        return _make_decision("spotify.play_query", {"query": query})
+    if "play" in text or "spotify" in text:
+        return _make_decision("spotify.play_query", {"query": raw_text})
+
+    return None
+
+
+def tool_to_domain(tool_name: str) -> str:
+    """Map a tool name to its domain for multi-agent routing."""
+    if tool_name.startswith("spotify."):
+        return "music"
+    if tool_name in {"home.scene", "reminders.create", "private.phone_data"}:
+        return "home"
+    return "info"
+
+
 class Brain:
     def __init__(self, settings: Settings, memory: MemoryStore) -> None:
         self.settings = settings
@@ -341,7 +519,7 @@ class Brain:
     # Main entry: deterministic first, Bedrock fallback
     # ------------------------------------------------------------------
 
-    def route_intent(self, req: IntentRequest, device_context: DeviceContext) -> RouterDecision:
+    def route_intent(self, req: IntentRequest, device_context: DeviceContext, trace: Any = None) -> RouterDecision:
         memory_text = self.memory.get_recent_context(req.user_id, limit=self.settings.memory_window)
         last_music_context = self.memory.get_last_music_context(req.user_id) or {}
 
@@ -349,8 +527,25 @@ class Brain:
         if deterministic:
             return deterministic
 
+        semantic_text = ""
+        if self.settings.semantic_memory_enabled and self._bedrock:
+            query_embedding = embed_text(
+                self._bedrock,
+                self.settings.embedding_model_id,
+                req.raw_text,
+            )
+            if query_embedding:
+                semantic_text = self.memory.get_semantic_context(
+                    req.user_id,
+                    query_embedding,
+                    top_k=self.settings.semantic_memory_top_k,
+                )
+
         if self._bedrock:
-            llm_decision = self._route_with_bedrock(req, device_context, memory_text, last_music_context)
+            llm_decision = self._route_with_bedrock(
+                req, device_context, memory_text, last_music_context,
+                semantic_text=semantic_text, trace=trace,
+            )
             if llm_decision:
                 return llm_decision
 
@@ -370,210 +565,18 @@ class Brain:
     def _deterministic_route(
         self, req: IntentRequest, last_music_context: dict[str, Any]
     ) -> RouterDecision | None:
-        text = req.raw_text.lower().strip().rstrip("?.!,")
-
-        # -- Replay (must come before generic "play" catch-all) --
-        if any(text == p or text.startswith(p) for p in _REPLAY_PHRASES):
-            previous_query = None
-            tp = last_music_context.get("tool_payload")
-            if isinstance(tp, dict):
-                previous_query = tp.get("title") or tp.get("spotify_uri")
-            query = previous_query or "my last track"
-            return self._decision("spotify.play_query", {"query": query}, confidence=0.9)
-
-        # -- Pause / Stop --
-        if self._match_exact(text, _PAUSE_PHRASES):
-            return self._decision("spotify.pause", {})
-
-        # -- Resume --
-        if self._match_exact(text, _RESUME_PHRASES):
-            return self._decision("spotify.resume", {})
-
-        # -- Skip / Next --
-        if self._match_exact(text, _SKIP_PHRASES):
-            return self._decision("spotify.skip", {})
-
-        # -- Previous --
-        if self._match_exact(text, _PREVIOUS_PHRASES):
-            return self._decision("spotify.previous", {})
-
-        # -- Volume: exact set --
-        vol_match = _SET_VOLUME_RE.match(text)
-        if vol_match:
-            return self._decision("spotify.set_volume", {"percent": int(vol_match.group(1))})
-
-        # -- Volume up --
-        if self._match_exact(text, _VOLUME_UP_PHRASES):
-            return self._decision("spotify.adjust_volume", {"delta_percent": 15})
-
-        # -- Volume down --
-        if self._match_exact(text, _VOLUME_DOWN_PHRASES):
-            return self._decision("spotify.adjust_volume", {"delta_percent": -15})
-
-        # -- Shuffle + playlist / artist (must come before simple shuffle) --
-        for prefix in _SHUFFLE_PLAYLIST_PREFIXES:
-            if text.startswith(prefix) and len(text) > len(prefix):
-                query = req.raw_text[len(prefix):].strip()
-                return self._decision("spotify.play_playlist", {"query": query, "shuffle": True})
-
-        for prefix in _SHUFFLE_ARTIST_PREFIXES:
-            if text.startswith(prefix) and len(text) > len(prefix):
-                query = req.raw_text[len(prefix):].strip()
-                return self._decision("spotify.play_artist", {"query": query, "shuffle": True})
-
-        # -- Shuffle off (before shuffle on) --
-        if self._match_exact(text, _SHUFFLE_OFF_PHRASES):
-            return self._decision("spotify.shuffle", {"state": False})
-
-        # -- Shuffle on --
-        if self._match_exact(text, _SHUFFLE_ON_PHRASES):
-            return self._decision("spotify.shuffle", {"state": True})
-
-        # -- Repeat off (before repeat on) --
-        if self._match_exact(text, _REPEAT_OFF_PHRASES):
-            return self._decision("spotify.repeat", {"mode": "off"})
-
-        # -- Repeat on --
-        if self._match_exact(text, _REPEAT_ON_PHRASES):
-            return self._decision("spotify.repeat", {"mode": "track"})
-
-        # -- What's playing --
-        if self._match_exact(text, _WHATS_PLAYING_PHRASES):
-            return self._decision("spotify.current_track", {})
-
-        # -- Like --
-        if self._match_exact(text, _LIKE_PHRASES):
-            return self._decision("spotify.like", {})
-
-        # -- Queue --
-        for prefix in _QUEUE_PREFIXES:
-            if text.startswith(prefix) and len(text) > len(prefix):
-                query = req.raw_text[len(prefix):].strip()
-                return self._decision("spotify.queue", {"query": query})
-
-        # -- Play playlist --
-        for prefix in _PLAY_PLAYLIST_PREFIXES:
-            if text.startswith(prefix) and len(text) > len(prefix):
-                query = req.raw_text[len(prefix):].strip()
-                return self._decision("spotify.play_playlist", {"query": query})
-
-        # -- Play artist --
-        for prefix in _PLAY_ARTIST_PREFIXES:
-            if text.startswith(prefix) and len(text) > len(prefix):
-                query = req.raw_text[len(prefix):].strip()
-                return self._decision("spotify.play_artist", {"query": query})
-
-        # -- Private data --
-        if self._match_contains(text, _PRIVATE_PHRASES):
-            return RouterDecision(
-                intent_type=IntentType.INFO_QUERY,
-                tool_name="private.phone_data",
-                tool_args={"query": req.raw_text},
-                action_code="PRIVATE_NOTE",
-                speak_text="",
-                private_note="Fetching private message summary to display on phone.",
-                confidence=0.85,
-                requires_private_display=True,
-            )
-
-        # -- Calendar --
-        if self._match_contains(text, _CALENDAR_PHRASES):
-            return self._decision("calendar.today", {})
-
-        # -- Reminders --
-        if any(k in text for k in _REMINDER_MARKERS):
-            reminder_text = req.raw_text
-            marker = "remind me to"
-            if marker in text:
-                reminder_text = req.raw_text.lower().split(marker, maxsplit=1)[1].strip()
-            return RouterDecision(
-                intent_type=IntentType.PERSONAL_REMINDER,
-                tool_name="reminders.create",
-                tool_args={"text": reminder_text},
-                action_code="REMINDER_CREATE",
-                speak_text="Okay, I will add that reminder.",
-                confidence=0.85,
-            )
-
-        # -- Home scenes --
-        if self._match_contains(text, _SCENE_PHRASES):
-            return RouterDecision(
-                intent_type=IntentType.HOME_SCENE,
-                tool_name="home.scene",
-                tool_args={"scene_name": req.raw_text},
-                action_code="SCENE_APPLY",
-                speak_text="Applying that home scene.",
-                confidence=0.8,
-            )
-
-        # -- Time --
-        if self._match_exact(text, _TIME_PHRASES):
-            return self._decision("time.now", {})
-
-        # -- Date --
-        if self._match_exact(text, _DATE_PHRASES):
-            return self._decision("time.date", {})
-
-        # -- Weather --
-        if self._match_contains(text, _WEATHER_PHRASES):
-            return self._decision("weather.current", {})
-
-        # -- Sunrise / Sunset --
-        if self._match_contains(text, _SUNRISE_SUNSET_PHRASES):
-            return self._decision("weather.sunrise_sunset", {})
-
-        # -- NBA team-specific (before general NBA) --
-        for prefix in _NBA_TEAM_PREFIXES:
-            if text.startswith(prefix) and len(text) > len(prefix):
-                team = req.raw_text[len(prefix):].strip()
-                for suf in _NBA_TEAM_SUFFIXES + [""]:
-                    if team.lower().endswith(suf):
-                        team = team[:len(team)-len(suf)].strip()
-                        break
-                if team:
-                    return self._decision("nba.team", {"team": team})
-
-        # -- NBA scores --
-        if self._match_contains(text, _NBA_PHRASES):
-            return self._decision("nba.scores", {})
-
-        # -- News topic --
-        for prefix in _NEWS_TOPIC_PREFIXES:
-            if text.startswith(prefix) and len(text) > len(prefix):
-                query = req.raw_text[len(prefix):].strip()
-                return self._decision("news.topic", {"query": query})
-
-        # -- News headlines --
-        if self._match_contains(text, _NEWS_PHRASES):
-            return self._decision("news.headlines", {})
-
-        # -- Generic "play ..." catch-all (must be last music match) --
-        if text.startswith("play ") and len(text) > 5:
-            query = req.raw_text[5:].strip() or "top tracks"
-            return self._decision("spotify.play_query", {"query": query})
-
-        if "play" in text or "spotify" in text:
-            return self._decision("spotify.play_query", {"query": req.raw_text})
-
-        # No deterministic match — fall through to Bedrock
-        return None
+        return deterministic_route(req.raw_text, last_music_context)
 
     @staticmethod
     def _match_exact(text: str, phrases: list[str]) -> bool:
-        return text in phrases
+        return _match_exact(text, phrases)
 
     @staticmethod
     def _match_contains(text: str, phrases: list[str]) -> bool:
-        return any(p in text for p in phrases)
+        return _match_contains(text, phrases)
 
     def _decision(self, tool_name: str, tool_args: dict[str, Any], confidence: float = 0.95) -> RouterDecision:
-        return RouterDecision(
-            intent_type=_TOOL_INTENT_MAP.get(tool_name, IntentType.INFO_QUERY),
-            tool_name=tool_name,
-            tool_args=tool_args,
-            action_code=_ACTION_CODES.get(tool_name, "NO_OP"),
-            confidence=confidence,
-        )
+        return _make_decision(tool_name, tool_args, confidence)
 
     # ------------------------------------------------------------------
     # Bedrock Converse tool-use routing (fallback)
@@ -585,29 +588,40 @@ class Brain:
         device_context: DeviceContext,
         memory_text: str,
         last_music_context: dict[str, Any],
+        semantic_text: str = "",
+        trace: Any = None,
     ) -> RouterDecision | None:
-        user_prompt = json.dumps(
-            {
-                "user": req.user_id,
-                "device_id": req.device_id,
-                "room": req.room,
-                "resolved_room": device_context.room_name,
-                "default_speaker": device_context.default_speaker,
-                "text": req.raw_text,
-                "timestamp": req.timestamp.isoformat(),
-                "memory_context": memory_text,
-                "last_music_context": last_music_context,
-            },
-            ensure_ascii=True,
-        )
+        prompt_data: dict[str, Any] = {
+            "user": req.user_id,
+            "device_id": req.device_id,
+            "room": req.room,
+            "resolved_room": device_context.room_name,
+            "default_speaker": device_context.default_speaker,
+            "text": req.raw_text,
+            "timestamp": req.timestamp.isoformat(),
+            "memory_context": memory_text,
+            "last_music_context": last_music_context,
+        }
+        if semantic_text:
+            prompt_data["semantic_context"] = semantic_text
+
+        user_prompt = json.dumps(prompt_data, ensure_ascii=True)
 
         try:
-            response = self._bedrock.converse(
-                modelId=self.settings.bedrock_model_id,
-                system=[{"text": ROUTER_SYSTEM_PROMPT}, {"cachePoint": {"type": "default"}}],
-                messages=[{"role": "user", "content": [{"text": user_prompt}]}],
-                toolConfig={"tools": TOOL_DEFINITIONS},
-                inferenceConfig={"maxTokens": 400, "temperature": 0.1},
+            response = trace_llm_call(
+                trace=trace,
+                name="route_intent",
+                model=self.settings.bedrock_model_id,
+                system_prompt=ROUTER_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                bedrock_call=lambda: self._bedrock.converse(
+                    modelId=self.settings.bedrock_model_id,
+                    system=[{"text": ROUTER_SYSTEM_PROMPT}, {"cachePoint": {"type": "default"}}],
+                    messages=[{"role": "user", "content": [{"text": user_prompt}]}],
+                    toolConfig={"tools": TOOL_DEFINITIONS},
+                    inferenceConfig={"maxTokens": 400, "temperature": 0.1},
+                ),
+                tool_config={"tools": TOOL_DEFINITIONS},
             )
             return self._parse_tool_use_response(response)
         except Exception as exc:

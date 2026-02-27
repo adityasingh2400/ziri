@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from app.settings import Settings
+from app.core.tracing import trace_tts_span
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +71,7 @@ class TTS:
                 logger.info("Pre-cached TTS: %s", phrase)
         return count
 
-    def synthesize(self, text: str) -> str | None:
+    def synthesize(self, text: str, trace: Any = None) -> str | None:
         if not text:
             return None
 
@@ -77,7 +80,7 @@ class TTS:
             return self._cache[key]
 
         if self._eleven_ok:
-            audio = self._elevenlabs_generate(text)
+            audio = self._elevenlabs_generate(text, trace=trace)
             if audio:
                 filename = f"{uuid4().hex}.mp3"
                 path = _AUDIO_DIR / filename
@@ -90,7 +93,7 @@ class TTS:
 
         return None
 
-    def _elevenlabs_generate(self, text: str) -> bytes | None:
+    def _elevenlabs_generate(self, text: str, trace: Any = None) -> bytes | None:
         """Stream audio from ElevenLabs, collecting chunks as they arrive."""
         try:
             import httpx
@@ -115,24 +118,35 @@ class TTS:
                 },
             }
 
-            buf = bytearray()
-            with httpx.Client(timeout=20) as client:
-                with client.stream("POST", url, headers=headers, json=body) as resp:
-                    if resp.status_code != 200:
-                        resp.read()
-                        logger.warning(
-                            "ElevenLabs TTS failed (status %s): %s",
-                            resp.status_code,
-                            resp.text[:200],
-                        )
-                        return None
-                    for chunk in resp.iter_bytes(chunk_size=4096):
-                        buf.extend(chunk)
+            with trace_tts_span(
+                trace=trace,
+                text=text,
+                voice_id=s.elevenlabs_voice_id,
+                model_id=s.elevenlabs_model_id,
+            ) as timing:
+                buf = bytearray()
+                first_chunk = True
+                stream_start = time.perf_counter()
+                with httpx.Client(timeout=20) as client:
+                    with client.stream("POST", url, headers=headers, json=body) as resp:
+                        if resp.status_code != 200:
+                            resp.read()
+                            logger.warning(
+                                "ElevenLabs TTS failed (status %s): %s",
+                                resp.status_code,
+                                resp.text[:200],
+                            )
+                            return None
+                        for chunk in resp.iter_bytes(chunk_size=4096):
+                            if first_chunk:
+                                timing["ttfb_ms"] = (time.perf_counter() - stream_start) * 1000
+                                first_chunk = False
+                            buf.extend(chunk)
 
-            if not buf:
-                logger.warning("ElevenLabs TTS returned empty audio")
-                return None
-            return bytes(buf)
+                if not buf:
+                    logger.warning("ElevenLabs TTS returned empty audio")
+                    return None
+                return bytes(buf)
         except Exception as exc:
             logger.warning("ElevenLabs TTS error: %s", exc)
             return None

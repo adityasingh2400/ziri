@@ -1,0 +1,25 @@
+{"input": "play some Drake", "expected_tool": "spotify.play_query", "expected_args": {"query": "Drake"}}
+{"input": "pause", "expected_tool": "spotify.pause", "expected_args": {}}
+{"input": "skip", "expected_tool": "spotify.skip", "expected_args": {}}
+{"input": "next song", "expected_tool": "spotify.skip", "expected_args": {}}
+{"input": "volume up", "expected_tool": "spotify.adjust_volume", "expected_args": {"delta_percent": 15}}
+{"input": "set volume to 50", "expected_tool": "spotify.set_volume", "expected_args": {"percent": 50}}
+{"input": "shuffle on", "expected_tool": "spotify.shuffle", "expected_args": {"state": true}}
+{"input": "what's playing", "expected_tool": "spotify.current_track", "expected_args": {}}
+{"input": "like this song", "expected_tool": "spotify.like", "expected_args": {}}
+{"input": "queue Bohemian Rhapsody", "expected_tool": "spotify.queue", "expected_args": {"query": "Bohemian Rhapsody"}}
+{"input": "play artist Taylor Swift", "expected_tool": "spotify.play_artist", "expected_args": {"query": "Taylor Swift"}}
+{"input": "play playlist chill vibes", "expected_tool": "spotify.play_playlist", "expected_args": {"query": "chill vibes"}}
+{"input": "what's the weather", "expected_tool": "weather.current", "expected_args": {}}
+{"input": "when is sunset", "expected_tool": "weather.sunrise_sunset", "expected_args": {}}
+{"input": "nba scores", "expected_tool": "nba.scores", "expected_args": {}}
+{"input": "how did the Lakers game", "expected_tool": "nba.team", "expected_args": {"team": "Lakers"}}
+{"input": "news", "expected_tool": "news.headlines", "expected_args": {}}
+{"input": "news about AI", "expected_tool": "news.topic", "expected_args": {"query": "AI"}}
+{"input": "what's on my calendar", "expected_tool": "calendar.today", "expected_args": {}}
+{"input": "remind me to buy milk", "expected_tool": "reminders.create", "expected_args": {"text": "buy milk"}}
+{"input": "movie mode", "expected_tool": "home.scene", "expected_args": {"scene_name": "movie mode"}}
+{"input": "what time is it", "expected_tool": "time.now", "expected_args": {}}
+{"input": "what day is it", "expected_tool": "time.date", "expected_args": {}}
+{"input": "who was the first president of the United States", "expected_tool": "general.answer", "expected_args": {"query": "who was the first president of the United States"}}
+{"input": "read my texts", "expected_tool": "private.phone_data", "expected_args": {"query": "read my texts"}}

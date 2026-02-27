@@ -5,6 +5,8 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any
 
+from app.core.embeddings import build_turn_text, embed_text
+
 try:
     from supabase import Client, create_client
 except Exception:  # pragma: no cover - optional import for local dev
@@ -32,6 +34,14 @@ class MemoryStore:
         context: dict[str, Any] | None = None,
     ) -> None:
         raise NotImplementedError
+
+    def get_semantic_context(
+        self,
+        user_id: str,
+        query_embedding: list[float],
+        top_k: int = 3,
+    ) -> str:
+        return ""
 
 
 class InMemoryStore(MemoryStore):
@@ -81,10 +91,18 @@ class InMemoryStore(MemoryStore):
 
 
 class SupabaseMemoryStore(MemoryStore):
-    def __init__(self, url: str, service_role_key: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        service_role_key: str,
+        bedrock_client: Any = None,
+        embedding_model_id: str = "",
+    ) -> None:
         if not create_client:
             raise RuntimeError("supabase package is not installed")
         self.client: Client = create_client(url, service_role_key)
+        self._bedrock = bedrock_client
+        self._embedding_model_id = embedding_model_id
 
     def get_recent_context(self, user_id: str, limit: int = 8) -> str:
         try:
@@ -136,7 +154,7 @@ class SupabaseMemoryStore(MemoryStore):
         context: dict[str, Any] | None = None,
     ) -> None:
         try:
-            payload = {
+            payload: dict[str, Any] = {
                 "user_id": user_id,
                 "raw_text": raw_text,
                 "intent_type": intent_type,
@@ -145,6 +163,41 @@ class SupabaseMemoryStore(MemoryStore):
                 "private_note": private_note,
                 "context_json": context or {},
             }
+
+            if self._bedrock and self._embedding_model_id:
+                turn_text = build_turn_text(raw_text, intent_type, tool_name, assistant_speak)
+                vector = embed_text(self._bedrock, self._embedding_model_id, turn_text)
+                if vector:
+                    payload["embedding"] = vector
+
             self.client.table("conversation_turns").insert(payload).execute()
         except Exception as exc:
             logger.warning("Failed to persist memory turn to Supabase: %s", exc)
+
+    def get_semantic_context(
+        self,
+        user_id: str,
+        query_embedding: list[float],
+        top_k: int = 3,
+    ) -> str:
+        try:
+            res = self.client.rpc(
+                "match_conversation_turns",
+                {
+                    "query_embedding": query_embedding,
+                    "match_user_id": user_id,
+                    "match_count": top_k,
+                },
+            ).execute()
+            rows = res.data or []
+            if not rows:
+                return ""
+            return "\n".join(
+                f"- [similarity={row.get('similarity', 0):.2f}] user: {row.get('raw_text', '')} | "
+                f"intent: {row.get('intent_type', '')} | tool: {row.get('tool_name', '')} | "
+                f"assistant: {row.get('assistant_speak', '')}"
+                for row in rows
+            )
+        except Exception as exc:
+            logger.warning("Semantic memory search failed: %s", exc)
+            return ""

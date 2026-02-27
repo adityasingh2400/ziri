@@ -5,11 +5,16 @@ from datetime import datetime, timezone
 
 from app import __version__
 from app.settings import Settings
+from app.core.agents.home_agent import HomeAgent
+from app.core.agents.info_agent import InfoAgent
+from app.core.agents.music_agent import MusicAgent
 from app.core.brain import Brain
 from app.core.device_registry import DeviceContext, DeviceRegistry
 from app.core.memory import InMemoryStore, MemoryStore, SupabaseMemoryStore
 from app.core.orchestrator import AuraOrchestrator
+from app.core.supervisor import Supervisor
 from app.core.tool_runner import ToolRunner
+from app.core.tracing import get_langfuse
 from app.data.preferences_repository import (
     InMemoryPreferencesRepository,
     PreferencesRepository,
@@ -46,10 +51,14 @@ class AuraHub:
         self.settings = settings
         self.device_registry = DeviceRegistry(settings.device_map_path)
         self.session_repository = self._build_session_repository()
-        self.memory_store = self._build_memory_store()
         self.preferences_repository = self._build_preferences_repository()
 
-        self.brain = Brain(settings=settings, memory=self.memory_store)
+        self.brain = Brain(settings=settings, memory=InMemoryStore())
+
+        # Build memory store with embedding support
+        self.memory_store = self._build_memory_store()
+        self.brain.memory = self.memory_store
+
         spotify = SpotifyController(settings=settings)
         calendar = CalendarController(settings=settings)
         reminders = RemindersBridge()
@@ -58,6 +67,7 @@ class AuraHub:
         weather = WeatherController(settings=settings)
         nba = NBAController()
         news = NewsController(settings=settings)
+
         tool_runner = ToolRunner(
             spotify=spotify,
             calendar=calendar,
@@ -81,13 +91,47 @@ class AuraHub:
             if cached:
                 logger.info("Pre-cached %d TTS phrases", cached)
 
+        # Build multi-agent components
+        supervisor = Supervisor(
+            settings=settings,
+            memory=self.memory_store,
+            bedrock_client=self.brain._bedrock,
+        )
+
+        music_agent = MusicAgent(settings=settings, spotify=spotify)
+        music_agent.set_bedrock_client(self.brain._bedrock)
+
+        info_agent = InfoAgent(
+            settings=settings,
+            calendar=calendar,
+            weather=weather,
+            nba=nba,
+            news=news,
+        )
+        info_agent.set_bedrock_client(self.brain._bedrock, settings.bedrock_model_id)
+
+        home_agent = HomeAgent(
+            settings=settings,
+            home_scene=home_scene,
+            reminders=reminders,
+            phone_bridge=phone_bridge,
+        )
+        home_agent.set_bedrock_client(self.brain._bedrock)
+
         self.orchestrator = AuraOrchestrator(
             settings=settings,
             brain=self.brain,
             tool_runner=tool_runner,
             memory=self.memory_store,
             tts=tts,
+            supervisor=supervisor,
+            music_agent=music_agent,
+            info_agent=info_agent,
+            home_agent=home_agent,
         )
+
+        # Eagerly initialise Langfuse so it's ready for first request
+        get_langfuse(settings)
 
     def _build_session_repository(self) -> SessionRepository:
         if self.settings.supabase_url and self.settings.supabase_service_role_key:
@@ -106,6 +150,8 @@ class AuraHub:
                 return SupabaseMemoryStore(
                     url=self.settings.supabase_url,
                     service_role_key=self.settings.supabase_service_role_key,
+                    bedrock_client=self.brain._bedrock,
+                    embedding_model_id=self.settings.embedding_model_id,
                 )
             except Exception as exc:
                 logger.warning("Using in-memory memory store: %s", exc)
@@ -172,11 +218,13 @@ class AuraHub:
         degraded = not using_bedrock
         eleven_ok = bool(self.settings.elevenlabs_api_key)
         components = {
-            "router": "bedrock" if using_bedrock else "heuristic_fallback",
+            "router": "multi_agent_supervisor" if self.orchestrator.supervisor else ("bedrock" if using_bedrock else "heuristic_fallback"),
             "sessions": "supabase" if using_supabase else "in_memory",
             "memory": self.memory_store.__class__.__name__,
             "preferences": self.preferences_repository.__class__.__name__,
             "tts": "elevenlabs" if eleven_ok else ("polly" if self.settings.enable_polly else "disabled"),
+            "semantic_memory": "enabled" if self.settings.semantic_memory_enabled else "disabled",
+            "tracing": "langfuse" if get_langfuse() else "disabled",
         }
 
         return StatusResponse(

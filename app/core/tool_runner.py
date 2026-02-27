@@ -16,6 +16,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from app.core.tracing import trace_llm_call
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,6 +51,7 @@ class ToolRunner:
         decision: RouterDecision,
         req: IntentRequest,
         device_context: DeviceContext,
+        trace: Any = None,
     ) -> ToolResult:
         if decision.tool_name == "spotify.play_query":
             query = str(decision.tool_args.get("query") or req.raw_text)
@@ -158,7 +161,7 @@ class ToolRunner:
             return self.home_scene.apply_scene(scene_name, device_context.room_name)
 
         if decision.tool_name == "general.answer":
-            return self._answer_with_bedrock(decision, req)
+            return self._answer_with_bedrock(decision, req, trace=trace)
 
         if decision.tool_name == "time.now":
             now = datetime.now()
@@ -199,22 +202,31 @@ class ToolRunner:
             error="unknown_tool",
         )
 
-    def _answer_with_bedrock(self, decision: RouterDecision, req: IntentRequest) -> ToolResult:
+    def _answer_with_bedrock(self, decision: RouterDecision, req: IntentRequest, trace: Any = None) -> ToolResult:
         query = str(decision.tool_args.get("query") or req.raw_text)
 
         if not self._bedrock:
             return ToolResult(ok=True, action_code="INFO_REPLY", speak_text="I'm not sure about that.", private_note="", payload={"query": query})
 
+        system_prompt = (
+            "You are Ziri, a concise voice assistant. Answer the user's question in 1-2 short sentences. "
+            "Be direct and accurate. Speak naturally as if talking to a friend. "
+            "Maximum 25 words. No filler."
+        )
+
         try:
-            response = self._bedrock.converse(
-                modelId=self._model_id,
-                system=[{"text": (
-                    "You are Ziri, a concise voice assistant. Answer the user's question in 1-2 short sentences. "
-                    "Be direct and accurate. Speak naturally as if talking to a friend. "
-                    "Maximum 25 words. No filler."
-                )}],
-                messages=[{"role": "user", "content": [{"text": query}]}],
-                inferenceConfig={"maxTokens": 80, "temperature": 0.5},
+            response = trace_llm_call(
+                trace=trace,
+                name="general_answer",
+                model=self._model_id,
+                system_prompt=system_prompt,
+                user_prompt=query,
+                bedrock_call=lambda: self._bedrock.converse(
+                    modelId=self._model_id,
+                    system=[{"text": system_prompt}],
+                    messages=[{"role": "user", "content": [{"text": query}]}],
+                    inferenceConfig={"maxTokens": 80, "temperature": 0.5},
+                ),
             )
 
             content = response.get("output", {}).get("message", {}).get("content", [])
