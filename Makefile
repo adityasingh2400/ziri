@@ -1,4 +1,4 @@
-.PHONY: install run test lint docker-up
+.PHONY: install run test lint docker-up start
 
 install:
 	pip install -r requirements.txt
@@ -14,3 +14,11 @@ lint:
 
 docker-up:
 	docker compose up --build
+
+start:
+	@echo "Starting Ziri (server + listener)..."
+	@echo "  Dashboard:  http://localhost:8000/listen"
+	@echo "  Status:     http://localhost:8000/status"
+	@echo "  Metrics:    http://localhost:8000/metrics"
+	@(sleep 2 && open http://localhost:8000/listen) &
+	/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 run_listener.py

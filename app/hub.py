@@ -11,7 +11,8 @@ from app.core.agents.music_agent import MusicAgent
 from app.core.brain import Brain
 from app.core.device_registry import DeviceContext, DeviceRegistry
 from app.core.memory import InMemoryStore, MemoryStore, SupabaseMemoryStore
-from app.core.orchestrator import AuraOrchestrator
+from app.core.orchestrator import ZiriOrchestrator
+from app.core.search import ElasticsearchStore, HybridSearcher
 from app.core.supervisor import Supervisor
 from app.core.tool_runner import ToolRunner
 from app.core.tracing import get_langfuse
@@ -46,7 +47,7 @@ from app.schemas import (
 logger = logging.getLogger(__name__)
 
 
-class AuraHub:
+class ZiriHub:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.device_registry = DeviceRegistry(settings.device_map_path)
@@ -58,6 +59,10 @@ class AuraHub:
         # Build memory store with embedding support
         self.memory_store = self._build_memory_store()
         self.brain.memory = self.memory_store
+
+        # Build Elasticsearch + hybrid search (graceful degradation)
+        self.es_store = self._build_es_store()
+        self.hybrid_searcher = HybridSearcher(es_store=self.es_store)
 
         spotify = SpotifyController(settings=settings)
         calendar = CalendarController(settings=settings)
@@ -118,7 +123,7 @@ class AuraHub:
         )
         home_agent.set_bedrock_client(self.brain._bedrock)
 
-        self.orchestrator = AuraOrchestrator(
+        self.orchestrator = ZiriOrchestrator(
             settings=settings,
             brain=self.brain,
             tool_runner=tool_runner,
@@ -128,10 +133,23 @@ class AuraHub:
             music_agent=music_agent,
             info_agent=info_agent,
             home_agent=home_agent,
+            hybrid_searcher=self.hybrid_searcher,
+            es_store=self.es_store,
         )
 
         # Eagerly initialise Langfuse so it's ready for first request
         get_langfuse(settings)
+
+    def _build_es_store(self) -> ElasticsearchStore | None:
+        if self.settings.elasticsearch_url:
+            try:
+                return ElasticsearchStore(
+                    url=self.settings.elasticsearch_url,
+                    index=self.settings.elasticsearch_index,
+                )
+            except Exception as exc:
+                logger.warning("Elasticsearch unavailable, hybrid search disabled: %s", exc)
+        return None
 
     def _build_session_repository(self) -> SessionRepository:
         if self.settings.supabase_url and self.settings.supabase_service_role_key:

@@ -1,4 +1,4 @@
--- Aura Hub initial schema for Supabase/Postgres
+-- Ziri initial schema for Supabase/Postgres
 create extension if not exists vector;
 
 create table if not exists sessions (

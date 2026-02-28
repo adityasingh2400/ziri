@@ -22,7 +22,7 @@ import numpy as np
 import sounddevice as sd
 
 if TYPE_CHECKING:
-    from app.hub import AuraHub
+    from app.hub import ZiriHub
     from app.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ class State(enum.Enum):
 class Listener:
     """Runs a background thread that captures mic audio and drives the state machine."""
 
-    def __init__(self, settings: Settings, hub: AuraHub) -> None:
+    def __init__(self, settings: Settings, hub: ZiriHub) -> None:
         self.settings = settings
         self.hub = hub
         self.state = State.IDLE
@@ -121,13 +121,17 @@ class Listener:
     def _ensure_whisper(self):
         if self._whisper_model is not None:
             return
+        if self.settings.elevenlabs_api_key:
+            logger.info("Using ElevenLabs Scribe for cloud STT")
+            self._whisper_model = "elevenlabs"
+            return
         from faster_whisper import WhisperModel
         self._whisper_model = WhisperModel(
             self.settings.whisper_model,
             device="cpu",
             compute_type="int8",
         )
-        logger.info("Whisper model loaded: %s", self.settings.whisper_model)
+        logger.info("Whisper model loaded (local): %s", self.settings.whisper_model)
 
     def _detect_mic_rate(self) -> int:
         """Query the default input device's native sample rate."""
@@ -231,7 +235,10 @@ class Listener:
 
                         elif self.state == State.LISTENING:
                             self._capture_frames.append(chunk)
-                            self._maybe_partial_transcribe()
+                            if self._whisper_model == "elevenlabs":
+                                self._send_audio_to_elevenlabs(chunk)
+                            else:
+                                self._maybe_partial_transcribe()
                             self._check_end_of_speech(chunk)
 
                         elif self.state in (State.TRANSCRIBING, State.PROCESSING, State.SPEAKING):
@@ -283,6 +290,7 @@ class Listener:
 
     def _transition_to_listening(self) -> None:
         self.state = State.LISTENING
+        logger.info("[DEBUG] === STATE -> LISTENING ===")
         self._capture_frames: list[np.ndarray] = []
         self._listen_start = time.monotonic()
         self._silence_start: float | None = None
@@ -291,12 +299,152 @@ class Listener:
         self._last_active_ts = time.time()
         self._last_partial_ts = time.monotonic()
         self._partial_busy = False
+        self._el_chunks_sent = 0
+        self._el_chunks_backlogged = 0
+
+        # ElevenLabs realtime STT WebSocket state
+        self._el_ws = None
+        self._el_final_text = ""
+        self._el_session_ready = False
+        self._el_audio_backlog: list[np.ndarray] = []
 
         self._duck_spotify()
+
+        # Start WS BEFORE chime so it connects during chime playback
+        if self._whisper_model == "elevenlabs":
+            logger.info("[DEBUG] Starting ElevenLabs WS thread (before chime)...")
+            import threading
+            threading.Thread(target=self._start_elevenlabs_ws, daemon=True).start()
 
         if self.settings.listener_chime_enabled:
             from app.core.audio_player import play_chime
             play_chime(blocking=True)
+            logger.info("[DEBUG] Chime done, %.2fs since wake", time.monotonic() - self._listen_start)
+
+    # ------------------------------------------------------------------
+    # ElevenLabs Realtime STT (official SDK)
+    # ------------------------------------------------------------------
+
+    def _start_elevenlabs_ws(self) -> None:
+        """Open ElevenLabs Scribe Realtime via the official SDK."""
+        try:
+            from elevenlabs import AudioFormat, CommitStrategy, ElevenLabs, RealtimeEvents, RealtimeAudioOptions
+
+            client = ElevenLabs(api_key=self.settings.elevenlabs_api_key)
+
+            el_loop = asyncio.new_event_loop()
+            self._el_loop = el_loop
+
+            async def _run():
+                connection = await client.speech_to_text.realtime.connect(
+                    RealtimeAudioOptions(
+                        model_id="scribe_v2_realtime",
+                        audio_format=AudioFormat.PCM_16000,
+                        sample_rate=TARGET_RATE,
+                        language_code="en",
+                        commit_strategy=CommitStrategy.VAD,
+                        vad_silence_threshold_secs=1.2,
+                    )
+                )
+                self._el_connection = connection
+
+                def on_session_started(data):
+                    logger.info("[DEBUG] SDK session_started, %.2fs since listen, backlog=%d",
+                                time.monotonic() - self._listen_start, len(self._el_audio_backlog))
+                    self._el_session_ready = True
+                    asyncio.create_task(_flush_backlog())
+
+                async def _flush_backlog():
+                    backlog = self._el_audio_backlog
+                    self._el_audio_backlog = []
+                    logger.info("[DEBUG] Flushing %d backlogged chunks", len(backlog))
+                    import base64
+                    first = True
+                    for chunk in backlog:
+                        payload = {"audio_base_64": base64.b64encode(chunk.tobytes()).decode()}
+                        if first:
+                            payload["previous_text"] = (
+                                "Ziri, Spotify, playlist, play, pause, resume, skip, "
+                                "shuffle, volume, queue, weather, calendar, news, NBA"
+                            )
+                            first = False
+                        await connection.send(payload)
+
+                def on_partial(data):
+                    text = data.get("text", "").strip() if isinstance(data, dict) else ""
+                    if text:
+                        self._current_transcript = text
+                        logger.info("[DEBUG] SDK partial: '%s' (%.2fs)",
+                                    text, time.monotonic() - self._listen_start)
+
+                def on_committed(data):
+                    text = data.get("text", "").strip() if isinstance(data, dict) else ""
+                    if text:
+                        self._el_final_text = text
+                        self._current_transcript = text
+                        logger.info("[DEBUG] SDK committed: '%s'", text)
+
+                def on_error(error):
+                    logger.warning("[DEBUG] SDK error: %s", error)
+
+                def on_close():
+                    logger.info("[DEBUG] SDK connection closed")
+
+                connection.on(RealtimeEvents.SESSION_STARTED, on_session_started)
+                connection.on(RealtimeEvents.PARTIAL_TRANSCRIPT, on_partial)
+                connection.on(RealtimeEvents.COMMITTED_TRANSCRIPT, on_committed)
+                connection.on(RealtimeEvents.ERROR, on_error)
+                connection.on(RealtimeEvents.CLOSE, on_close)
+
+                while self.state in (State.LISTENING, State.TRANSCRIBING) and self._running:
+                    await asyncio.sleep(0.05)
+
+            try:
+                el_loop.run_until_complete(_run())
+            finally:
+                el_loop.close()
+                self._el_loop = None
+
+        except Exception as exc:
+            logger.warning("[DEBUG] ElevenLabs SDK STT failed: %s", exc)
+            self._el_connection = None
+
+    def _send_audio_to_elevenlabs(self, chunk: np.ndarray, is_first: bool = False, loop=None) -> None:
+        """Send a PCM chunk to the ElevenLabs SDK connection."""
+        conn = getattr(self, '_el_connection', None)
+        if not conn:
+            return
+        if not self._el_session_ready:
+            self._el_audio_backlog.append(chunk)
+            self._el_chunks_backlogged = len(self._el_audio_backlog)
+            if self._el_chunks_backlogged % 20 == 1:
+                logger.info("[DEBUG] Backlogging chunk (total=%d)", self._el_chunks_backlogged)
+            return
+        try:
+            import base64
+            payload = {"audio_base_64": base64.b64encode(chunk.tobytes()).decode()}
+            el_loop = self._el_loop
+            if el_loop and el_loop.is_running():
+                asyncio.run_coroutine_threadsafe(conn.send(payload), el_loop)
+            self._el_chunks_sent += 1
+            if self._el_chunks_sent % 30 == 1:
+                logger.info("[DEBUG] Sent chunk #%d (%.2fs)",
+                            self._el_chunks_sent, time.monotonic() - self._listen_start)
+        except Exception as exc:
+            logger.warning("[DEBUG] SDK send failed: %s", exc)
+
+    def _close_elevenlabs_ws(self) -> None:
+        """Close the ElevenLabs SDK connection."""
+        self._el_session_ready = False
+        self._el_audio_backlog = []
+        conn = getattr(self, '_el_connection', None)
+        el_loop = getattr(self, '_el_loop', None)
+        if conn and el_loop and el_loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(conn.close(), el_loop).result(timeout=2)
+            except Exception:
+                pass
+        self._el_connection = None
 
     # ------------------------------------------------------------------
     # Live partial transcription during listening (non-blocking)
@@ -336,16 +484,20 @@ class Listener:
         ).start()
 
     def _run_partial(self, frames: list[np.ndarray]) -> None:
-        """Run whisper on a snapshot of frames (background thread)."""
+        """Run transcription on a snapshot of frames (background thread)."""
         try:
             audio = np.concatenate(frames).astype(np.float32) / 32768.0
             rms = float(np.sqrt(np.mean(audio ** 2)))
             if rms < 0.005:
                 return
-            segments, _ = self._whisper_model.transcribe(
-                audio, language="en", beam_size=1, vad_filter=False,
-            )
-            partial = " ".join(seg.text.strip() for seg in segments).strip()
+            if self._whisper_model == "elevenlabs":
+                partial = self._transcribe_elevenlabs(audio)
+            else:
+                segments, _ = self._whisper_model.transcribe(
+                    audio, language="en", beam_size=1, vad_filter=False,
+                    initial_prompt=self._TRANSCRIPTION_PROMPT,
+                )
+                partial = " ".join(seg.text.strip() for seg in segments).strip()
             if partial and not self._is_hallucination(partial):
                 self._current_transcript = partial
         except Exception:
@@ -394,27 +546,120 @@ class Listener:
     # Transcribing -> Processing  (faster-whisper STT)
     # ------------------------------------------------------------------
 
+    # Domain vocabulary hint for local Whisper fallback
+    _TRANSCRIPTION_PROMPT = (
+        "Ziri, Spotify, playlist, play, pause, resume, skip, shuffle, "
+        "volume, queue, weather, calendar, remind, reminder, news, "
+        "NBA, Lakers, Celtics, Warriors, "
+        "goodnight, movie mode, focus, "
+        "Hey Jarvis"
+    )
+
+    def _transcribe_elevenlabs(self, audio_float: np.ndarray) -> str | None:
+        """Send audio to ElevenLabs Scribe API. Returns transcript or None."""
+        import io
+        import struct
+        import ssl
+        import certifi
+        import httpx
+
+        pcm16 = (audio_float * 32767).astype(np.int16)
+        buf = io.BytesIO()
+        n = len(pcm16)
+        buf.write(b"RIFF")
+        buf.write(struct.pack("<I", 36 + n * 2))
+        buf.write(b"WAVE")
+        buf.write(b"fmt ")
+        buf.write(struct.pack("<IHHIIHH", 16, 1, 1, TARGET_RATE, TARGET_RATE * 2, 2, 16))
+        buf.write(b"data")
+        buf.write(struct.pack("<I", n * 2))
+        buf.write(pcm16.tobytes())
+        buf.seek(0)
+
+        try:
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+            with httpx.Client(timeout=10, verify=ssl_ctx) as client:
+                resp = client.post(
+                    "https://api.elevenlabs.io/v1/speech-to-text",
+                    headers={"xi-api-key": self.settings.elevenlabs_api_key},
+                    files={"file": ("audio.wav", buf, "audio/wav")},
+                    data={
+                        "model_id": "scribe_v2",
+                        "language_code": "eng",
+                        "tag_audio_events": "false",
+                    },
+                )
+            if resp.status_code == 200:
+                text = resp.json().get("text", "").strip()
+                return text if text else None
+            logger.warning("ElevenLabs STT failed (status %d): %s", resp.status_code, resp.text[:200])
+            return None
+        except Exception as exc:
+            logger.warning("ElevenLabs STT error: %s", exc)
+            return None
+
+    def _transcribe_local(self, audio_float: np.ndarray) -> str | None:
+        """Transcribe with local faster-whisper."""
+        segments, _ = self._whisper_model.transcribe(
+            audio_float,
+            language="en",
+            beam_size=1,
+            vad_filter=True,
+            initial_prompt=self._TRANSCRIPTION_PROMPT,
+        )
+        text = " ".join(seg.text.strip() for seg in segments).strip()
+        return text if text else None
+
     def _transition_to_transcribing(self) -> None:
         self.state = State.TRANSCRIBING
+        logger.info("[DEBUG] === STATE -> TRANSCRIBING === (chunks_sent=%d, backlogged=%d, ws_ready=%s, current_transcript='%s', el_final='%s')",
+                    getattr(self, '_el_chunks_sent', 0), getattr(self, '_el_chunks_backlogged', 0),
+                    self._el_session_ready, self._current_transcript, self._el_final_text)
+
         if not self._capture_frames:
-            logger.info("No audio captured, returning to idle")
+            logger.info("[DEBUG] No audio captured, returning to idle")
+            self._close_elevenlabs_ws()
             self._unduck_spotify()
             self.state = State.IDLE
             return
 
         audio = np.concatenate(self._capture_frames).astype(np.float32) / 32768.0
         self._capture_frames = []
+        logger.info("[DEBUG] Audio: %.2fs, using %s path",
+                    len(audio) / TARGET_RATE,
+                    "elevenlabs-sdk" if (self._whisper_model == "elevenlabs" and getattr(self, '_el_connection', None)) else "fallback")
 
-        segments, _info = self._whisper_model.transcribe(
-            audio,
-            language="en",
-            beam_size=1,
-            vad_filter=True,
-        )
-        text = " ".join(seg.text.strip() for seg in segments).strip()
+        text = None
+
+        if self._whisper_model == "elevenlabs" and getattr(self, '_el_connection', None):
+            conn = self._el_connection
+            el_loop = getattr(self, '_el_loop', None)
+            try:
+                if el_loop and el_loop.is_running():
+                    logger.info("[DEBUG] Sending commit via SDK")
+                    fut = asyncio.run_coroutine_threadsafe(conn.commit(), el_loop)
+                    fut.result(timeout=2)
+                for i in range(30):
+                    if self._el_final_text:
+                        logger.info("[DEBUG] Got committed text after %dms", i * 50)
+                        break
+                    time.sleep(0.05)
+            except Exception as exc:
+                logger.warning("[DEBUG] SDK commit failed: %s", exc)
+
+            text = self._el_final_text or self._current_transcript
+            logger.info("[DEBUG] SDK text='%s' (final='%s', partial='%s')", text, self._el_final_text, self._current_transcript)
+            self._close_elevenlabs_ws()
+
+            if not text:
+                logger.info("[DEBUG] No SDK text, falling back to batch REST API")
+                text = self._transcribe_elevenlabs(audio)
+        else:
+            logger.info("[DEBUG] Using local whisper fallback")
+            text = self._transcribe_local(audio)
 
         if not text or self._is_hallucination(text):
-            logger.info("Empty or hallucinated transcript, returning to idle")
+            logger.info("[DEBUG] Empty or hallucinated transcript ('%s'), returning to idle", text)
             self._unduck_spotify()
             self.state = State.IDLE
             return
@@ -429,21 +674,52 @@ class Listener:
 
     def _dispatch_intent(self, text: str) -> None:
         self.state = State.PROCESSING
+        logger.info("[DEBUG] === STATE -> PROCESSING === transcript='%s'", text)
         if self._loop is None:
             logger.error("No event loop available")
             self._unduck_spotify()
             self.state = State.IDLE
             return
 
+        logger.info("[DEBUG] Submitting to event loop...")
         future = asyncio.run_coroutine_threadsafe(self._async_handle(text), self._loop)
         try:
-            future.result(timeout=30)
+            response = future.result(timeout=30)
+            logger.info("[DEBUG] Event loop returned response, action=%s", response.action_code if response else "None")
         except Exception:
             logger.exception("Intent processing failed")
+            self._unduck_spotify()
+            self.state = State.IDLE
+            return
+
+        from app.core.personality import QUICK_REPLY_ACTIONS
+        silent = response.action_code in QUICK_REPLY_ACTIONS
+        if response.audio_url and not silent:
+            self.state = State.SPEAKING
+            logger.info("[DEBUG] === STATE -> SPEAKING === response='%s'", self._current_response[:80])
+            self._play_response_audio(response.audio_url)
+
+        logger.info("[DEBUG] === STATE -> IDLE ===")
         self._unduck_spotify()
+        self._current_transcript = ""
+        self._current_response = ""
         self.state = State.IDLE
 
-    async def _async_handle(self, text: str) -> None:
+    def _play_response_audio(self, audio_url: str) -> None:
+        """Play TTS audio in the listener thread (not on the event loop)."""
+        from app.core.audio_player import play_audio_file
+        from pathlib import Path
+        static_root = Path(__file__).resolve().parent.parent / "static"
+        if audio_url.startswith("/static/"):
+            local_path = static_root / audio_url[len("/static/"):]
+        else:
+            local_path = static_root / "audio" / Path(audio_url).name
+        if local_path.exists():
+            play_audio_file(local_path, blocking=True)
+        else:
+            logger.warning("Audio file not found: %s", local_path)
+
+    async def _async_handle(self, text: str):
         from app.schemas import IntentRequest
         from app.core.personality import QUICK_REPLY_ACTIONS
 
@@ -457,7 +733,10 @@ class Listener:
         )
 
         try:
-            response = await self.hub.handle_intent(request)
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None, self._run_intent_sync, request,
+            )
             latency_ms = int((time.monotonic() - t0) * 1000)
             logger.info(
                 "Response: action=%s speak=%s",
@@ -473,6 +752,7 @@ class Listener:
                 latency_ms=latency_ms,
             ))
             self._current_response = "" if silent else (response.speak_text or "")
+            return response
         except Exception as exc:
             self.history.appendleft(InteractionRecord(
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -481,17 +761,14 @@ class Listener:
             ))
             raise
 
-        silent = response.action_code in QUICK_REPLY_ACTIONS
-        if response.audio_url and not silent:
-            self.state = State.SPEAKING
-            from app.core.audio_player import play_audio_file
-            from pathlib import Path
-            static_root = Path(__file__).resolve().parent.parent / "static"
-            if response.audio_url.startswith("/static/"):
-                local_path = static_root / response.audio_url[len("/static/"):]
-            else:
-                local_path = static_root / "audio" / Path(response.audio_url).name
-            if local_path.exists():
-                play_audio_file(local_path, blocking=True)
-            else:
-                logger.warning("Audio file not found: %s", local_path)
+    def _run_intent_sync(self, request):
+        """Run hub.handle_intent in a fresh event loop inside a thread pool thread.
+
+        This keeps the main uvicorn event loop free to serve dashboard polls
+        while the (potentially slow) tool calls execute.
+        """
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(self.hub.handle_intent(request))
+        finally:
+            loop.close()

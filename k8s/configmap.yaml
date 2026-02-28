@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ziri-config
+  namespace: ziri
+data:
+  APP_NAME: "Ziri"
+  APP_ENV: "dev"
+  LOG_LEVEL: "INFO"
+  CORS_ALLOW_ORIGINS: "*"
+  AWS_REGION: "us-east-1"
+  DATABASE_URL: "postgresql://ziri:ziri@postgres:5432/ziri"
+  WORKER_URL: "http://worker:8001"
+  SEMANTIC_MEMORY_ENABLED: "true"
+  SEMANTIC_MEMORY_TOP_K: "3"
+  MEMORY_WINDOW: "8"
+  RETURN_AUDIO_URL: "true"
+  ELASTICSEARCH_URL: "http://elasticsearch:9200"

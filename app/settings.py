@@ -12,9 +12,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "Aura Hub"
+    app_name: str = "Ziri"
     app_env: str = "dev"
-    aura_port: int = 8000
+    ziri_port: int = 8000
     log_level: str = "INFO"
     cors_allow_origins: str = "*"
 
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     elevenlabs_streaming_latency: int = 3
     elevenlabs_stability: float = 0.55
     elevenlabs_similarity_boost: float = 0.85
-    elevenlabs_speed: float = 1.0
+    elevenlabs_speed: float = 0.85
 
     user_latitude: float = 40.7128
     user_longitude: float = -74.0060
@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     embedding_model_id: str = "amazon.titan-embed-text-v1:0"
     semantic_memory_top_k: int = 3
     semantic_memory_enabled: bool = True
+
+    # Elasticsearch (hybrid search)
+    elasticsearch_url: Optional[str] = None
+    elasticsearch_index: str = "ziri_conversation_turns"
 
     # Always-on listener
     wake_word_model: str = "hey_jarvis"

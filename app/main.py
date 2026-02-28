@@ -14,9 +14,10 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.settings import get_settings
-from app.hub import AuraHub
+from app.hub import ZiriHub
 from app.integrations.spotify_auth import SpotifyAuthHelper
 from app.schemas import IntentRequest, IntentResponse, StatusResponse
+from app.core.metrics import REQUEST_DURATION, PROMETHEUS_AVAILABLE
 
 from datetime import datetime, timezone
 
@@ -24,7 +25,7 @@ settings = get_settings()
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
-hub = AuraHub(settings=settings)
+hub = ZiriHub(settings=settings)
 spotify_auth = SpotifyAuthHelper(settings=settings)
 
 _static_dir = Path(__file__).resolve().parent / "static"
@@ -40,6 +41,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if PROMETHEUS_AVAILABLE:
+    from app.core.metrics import make_asgi_app as _make_metrics_app
+    _metrics_app = _make_metrics_app()
+    app.mount("/metrics/", _metrics_app)
+
+    @app.get("/metrics")
+    async def _metrics_redirect():
+        from starlette.responses import RedirectResponse as _RR
+        return _RR("/metrics/", status_code=301)
+
 
 @app.middleware("http")
 async def add_request_id_and_timing(request: Request, call_next) -> Response:
@@ -49,6 +60,10 @@ async def add_request_id_and_timing(request: Request, call_next) -> Response:
     latency_ms = int((time.monotonic() - started) * 1000)
     response.headers["X-Request-Id"] = req_id
     response.headers["X-Process-Time-Ms"] = str(latency_ms)
+    endpoint = request.url.path
+    REQUEST_DURATION.labels(
+        method=request.method, endpoint=endpoint, status=response.status_code,
+    ).observe(latency_ms / 1000)
     return response
 
 

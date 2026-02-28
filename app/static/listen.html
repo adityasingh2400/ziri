@@ -122,13 +122,31 @@ body>*:not(#fluid-bg):not(.history-btn):not(.hist-backdrop):not(.history-modal){
 
 /* ---- Status pill (in page flow, under controls) ---- */
 .status-pill{
-  z-index:4;display:flex;align-items:center;gap:8px;
-  padding:6px 16px;border-radius:20px;
+  z-index:4;display:flex;align-items:center;gap:0;
+  padding:6px 28px;border-radius:20px;height:32px;
   background:rgba(0,0,0,.25);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
   border:1px solid rgba(255,255,255,.06);
   font-size:.68rem;color:var(--muted);
-  transition:opacity .5s;
+  transition:all .5s cubic-bezier(.4,0,.2,1);
   white-space:nowrap;margin-top:8px;
+  overflow:hidden;
+  min-width:60px;
+  justify-content:center;
+}
+.status-pill.expanded{
+  gap:8px;padding:6px 18px;
+}
+.status-pill .sdot{
+  width:6px;height:6px;border-radius:50%;
+  transition:background .3s,box-shadow .3s;flex-shrink:0;
+}
+.status-pill .slabel{
+  max-width:0;opacity:0;overflow:hidden;
+  transition:max-width .4s cubic-bezier(.4,0,.2,1),opacity .3s ease;
+  white-space:nowrap;
+}
+.status-pill.expanded .slabel{
+  max-width:200px;opacity:1;
 }
 .status-pill .sdot{
   width:6px;height:6px;border-radius:50%;
@@ -256,7 +274,7 @@ canvas#color-canvas{display:none}
 <!-- Status pill (always visible) -->
 <div class="status-pill" id="status-pill">
   <div class="sdot idle" id="sdot"></div>
-  <span id="slabel">Connecting...</span>
+  <span class="slabel" id="slabel"></span>
 </div>
 
 <!-- History button + modal -->
@@ -615,10 +633,11 @@ const voiceIndicator=$('voice-indicator'),voiceState=$('voice-state');
 const sdot=$('sdot'),slabel=$('slabel');
 const histBtn=$('history-btn'),histBadge=$('hist-badge'),histBackdrop=$('hist-backdrop'),histModal=$('history-modal'),histClose=$('hist-close'),histList=$('hist-list');
 
-const stateLabels={idle:'Listening for "Hey Jarvis"',listening:'Listening...',transcribing:'Transcribing...',processing:'Thinking...',speaking:'Speaking...',not_started:'Not started'};
+const stateLabels={idle:'',listening:'Listening...',transcribing:'Transcribing...',processing:'Thinking...',speaking:'Speaking...',not_started:''};
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 
 let prevState='idle',prevTranscript='',prevResponse='',fadeTimer=null,shownWordsFor='';
+const statusPill=$('status-pill');
 
 function typewriterWords(container,text){
   if(shownWordsFor===text)return;
@@ -631,43 +650,58 @@ function typewriterWords(container,text){
   });
 }
 
+function expandPill(label){
+  slabel.textContent=label;
+  statusPill.classList.add('expanded');
+}
+
+function collapsePill(){
+  statusPill.classList.remove('expanded');
+  setTimeout(()=>{slabel.textContent='';},400);
+}
+
 function showOverlay(state,transcript,response){
   if(fadeTimer){clearTimeout(fadeTimer);fadeTimer=null}
 
-  if(state==='idle'&&prevState==='idle')return;
+  if(state==='idle'&&prevState==='idle'&&!response)return;
 
   if(state!=='idle'){
+    expandPill(stateLabels[state]||state);
+
     voiceOverlay.classList.remove('fading');
     voiceOverlay.classList.add('active');
-    voiceState.textContent=state==='listening'?'Listening...':state==='transcribing'?'Transcribing...':state==='processing'?'Thinking...':'Speaking...';
-    voiceIndicator.style.display='flex';
+    voiceIndicator.style.display='none';
 
-    if(transcript&&(state==='listening'||state==='transcribing'||state==='processing'||state==='speaking')){
+    if(transcript){
       typewriterWords(voiceYou,transcript);
     }
-    if(response&&(state==='speaking'||state==='processing')){
+    if(response){
       voiceZiri.textContent=response;
       voiceZiri.classList.add('visible');
     }
   }
 
   if(state==='idle'&&prevState!=='idle'){
-    if(prevResponse||prevTranscript){
-      voiceIndicator.style.display='none';
-      fadeTimer=setTimeout(()=>{
-        voiceOverlay.classList.remove('active');
-        voiceOverlay.classList.add('fading');
-        setTimeout(()=>{
-          voiceOverlay.classList.remove('fading');
-          voiceYou.innerHTML='';
-          voiceZiri.textContent='';
-          voiceZiri.classList.remove('visible');
-          shownWordsFor='';
-        },1800);
-      },4000);
-    }else{
-      voiceOverlay.classList.remove('active');
+    collapsePill();
+
+    // Show response briefly if we have one, then fade
+    if(response&&!prevResponse){
+      voiceZiri.textContent=response;
+      voiceZiri.classList.add('visible');
     }
+
+    const holdMs=(prevResponse||response)?2500:300;
+    fadeTimer=setTimeout(()=>{
+      voiceOverlay.classList.remove('active');
+      voiceOverlay.classList.add('fading');
+      setTimeout(()=>{
+        voiceOverlay.classList.remove('fading');
+        voiceYou.innerHTML='';
+        voiceZiri.textContent='';
+        voiceZiri.classList.remove('visible');
+        shownWordsFor='';
+      },1200);
+    },holdMs);
   }
 
   prevState=state;
@@ -719,19 +753,27 @@ async function pollListener(){
     const r=await fetch('/dashboard/api');
     const d=await r.json();
     const L=d.listener;
-    if(!L){sdot.className='sdot off';slabel.textContent='Disconnected';return}
+    if(!L){sdot.className='sdot off';collapsePill();return}
 
     sdot.className='sdot '+(L.running?L.state:'off');
-    slabel.textContent=L.running?(stateLabels[L.state]||L.state):'Stopped';
+    if(!L.running){
+      expandPill('Stopped');
+    } else if(L.state==='idle'){
+      collapsePill();
+    }
+
+    // Speed up polling during active states for live transcript
+    pollInterval=(L.state&&L.state!=='idle')?250:600;
 
     showOverlay(L.state,L.current_transcript,L.current_response);
     renderHistory(L.history);
   }catch(e){
-    sdot.className='sdot off';slabel.textContent='Disconnected';
+    sdot.className='sdot off';collapsePill();
   }
 }
-pollListener();
-setInterval(pollListener,600);
+let pollInterval=600;
+function schedulePoll(){setTimeout(async()=>{await pollListener();schedulePoll()},pollInterval)}
+pollListener();schedulePoll();
 
 // ===== Debug panel =====
 async function loadDebug(){

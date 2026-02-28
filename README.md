@@ -17,7 +17,7 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
 │                                  │                                           │
 │                                  ▼                                           │
 │  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │  AuraHub.handle_intent()                                              │   │
+│  │  │  ZiriHub.handle_intent()                                              │   │
 │  │  ┌─────────────────────────────────────────────────────────────────┐  │   │
 │  │  │  LangGraph Orchestrator                                         │  │   │
 │  │  │                                                                 │  │   │
@@ -64,8 +64,8 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
 
 ### Voice Pipeline
 - **Always-on wake word detection** — "Hey Jarvis" via [openwakeword](https://github.com/dscripka/openWakeWord) (ONNX)
-- **Local speech-to-text** — [faster-whisper](https://github.com/SYSTRAN/faster-whisper) running on-device, no cloud STT
-- **Live partial transcription** — words appear on the dashboard as you speak, not after
+- **Cloud speech-to-text** — ElevenLabs Scribe v2 Realtime via WebSocket streaming (~150ms latency), with local faster-whisper fallback
+- **Live partial transcription** — words appear on the dashboard as you speak via realtime WebSocket partials
 - **ElevenLabs streaming TTS** — 192kbps MP3 via the `/stream` endpoint with `optimize_streaming_latency=3`
 - **Custom 11Labs sound effects** — wake word blip and thinking pulse generated with ElevenLabs SFX
 - **Spotify volume ducking** — music drops to 20% on wake, gradually restores after response
@@ -82,18 +82,21 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
 - **LangGraph orchestration** — `supervisor → conditional_edges → [music|info|home|quick] → respond` with full state passing
 - **Graceful degradation** — falls back to legacy linear pipeline if LangGraph is unavailable; in-memory stores if Supabase is unreachable; heuristic routing if Bedrock is down
 
-### Semantic Memory (pgvector)
+### Semantic Memory (pgvector) & Hybrid Search
 - **Vector embeddings** — every conversation turn is embedded using Amazon Titan Embeddings v1 (1536-dim) and stored in Supabase PostgreSQL via pgvector
 - **HNSW similarity search** — before routing, the user's query is embedded and matched against past conversation turns using cosine similarity
-- **Hybrid context injection** — both recency-based context (last N turns) and semantically relevant past context are injected into the LLM prompt
+- **Elasticsearch keyword search** — conversation turns are indexed in Elasticsearch for BM25 keyword retrieval (graceful degradation when ES unavailable)
+- **Reciprocal Rank Fusion (RRF)** — keyword results from Elasticsearch and semantic results from pgvector are merged via RRF re-ranking for higher retrieval accuracy
+- **Hybrid context injection** — both recency-based context (last N turns) and fused hybrid search results are injected into the LLM prompt
 - **Optimized token usage** — instead of stuffing the entire chat history into the context window, only the most relevant past interactions are retrieved
 
-### Observability & Evaluation (Langfuse)
+### Observability & Evaluation (Langfuse + Prometheus)
 - **End-to-end tracing** — every request creates a Langfuse trace spanning supervisor classification, sub-agent reasoning, tool execution, and TTS synthesis
 - **LLM generation spans** — token usage (`inputTokens`, `outputTokens`), model ID, latency, and full prompt I/O are recorded for every Bedrock call
 - **TTS TTFB tracking** — time-to-first-byte and total synthesis latency are captured for ElevenLabs streaming calls
+- **Prometheus metrics** — `/metrics` endpoint exposes request duration, intent routing latency, TTS TTFB, tool execution time, deterministic route hit/miss, and LLM call counters
 - **Offline evaluation** — `scripts/eval_tool_routing.py` runs 25 test cases through the routing pipeline, scoring tool-name accuracy and argument correctness, with results logged to Langfuse
-- **Zero-overhead when disabled** — all tracing is no-op when Langfuse keys are not configured
+- **Zero-overhead when disabled** — all tracing is no-op when Langfuse keys are not configured; Prometheus degrades gracefully without the package
 
 ### Integrations
 - **Spotify** — search, play, pause, skip, queue, volume, shuffle, repeat, like, device control
@@ -114,6 +117,11 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
 
 ### Infrastructure
 - **FastAPI** backend with async request handling
+- **Containerized microservices** — separate Docker images for API server and LangGraph worker
+- **Docker Compose** — multi-service stack (API, worker, PostgreSQL with pgvector, Elasticsearch)
+- **Kubernetes (kind)** — full local cluster with Deployments, Services, ConfigMaps, PVCs, and a Kustomize overlay
+- **CI/CD** — GitHub Actions pipeline with linting (ruff), testing (pytest with coverage), and Docker image builds
+- **Prometheus monitoring** — deployed in the kind cluster, scrapes `/metrics` from API and worker services
 - **Pydantic v2** strict validation on all schemas
 - **Multi-input** — always-on mic, Siri Shortcuts, browser, REST API all share one pipeline
 - **Session logging** — Supabase persistence with in-memory fallback
@@ -129,17 +137,21 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
 | Orchestration | LangGraph (Supervisor + Conditional Edges + ReAct Sub-Agents) |
 | Embeddings | Amazon Titan Embeddings v1 (1536-dim) via AWS Bedrock |
 | Vector Store | pgvector on Supabase PostgreSQL (HNSW index) |
-| Observability | Langfuse (traces, generations, scores) |
+| Search | Elasticsearch (keyword) + pgvector (semantic) with RRF fusion |
+| Observability | Langfuse (traces, generations, scores) + Prometheus (metrics) |
 | TTS | ElevenLabs (streaming, 192kbps) with AWS Polly fallback |
-| STT | faster-whisper (local, CPU, int8) |
+| STT | ElevenLabs Scribe v2 Realtime (WebSocket) with faster-whisper fallback |
 | Wake Word | openwakeword (ONNX) |
 | Backend | FastAPI + Uvicorn |
+| Containers | Docker (multi-service) + Kubernetes (kind) |
+| CI/CD | GitHub Actions (lint, test, build) |
 | Music | Spotify Web API (spotipy) |
 | Calendar | Google Calendar API |
 | Database | Supabase (PostgreSQL + pgvector) |
 | Frontend | Vanilla JS + WebGL Fluid Simulation |
 | Audio | sounddevice + soundfile |
 | Sound FX | ElevenLabs Sound Effects API |
+| Testing | PyTest (272 tests) with pytest-cov |
 
 ## Multi-Agent Architecture
 
@@ -226,36 +238,36 @@ Ziri uses [Langfuse](https://langfuse.com) for full-stack LLM observability:
 ## Quick Start
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your API keys
 ```
 
-**Run the pgvector migration** (if using Supabase):
+**Start everything (server + listener + dashboard):**
 ```bash
-# In your Supabase SQL editor, run:
-# sql/001_init.sql  (if not already applied)
-# sql/002_vector_index.sql
+make start
 ```
 
-**Server + always-on listener:**
+**Or run manually:**
 ```bash
-python3 run_listener.py
+python3 run_listener.py              # Server + wake word listener
+python3 run_listener.py --no-listener # Server only
 ```
 
-**Server only (no wake word):**
+**Run the test suite (272 tests):**
 ```bash
-python3 run_listener.py --no-listener
+pytest -q
 ```
 
-**Run the routing evaluation:**
+**Docker Compose (microservices):**
 ```bash
-python3 scripts/eval_tool_routing.py --verbose
+docker compose up --build
 ```
 
-Then open `http://localhost:8000/listen` for the dashboard.
+**Kubernetes (kind cluster):**
+```bash
+bash scripts/kind-setup.sh
+```
 
 ## Environment Variables
 
@@ -294,6 +306,9 @@ WebGL fluid dashboard with Spotify now-playing and voice interaction overlay.
 ### `GET /dashboard/api`
 JSON API returning listener state, transcript, response, and interaction history.
 
+### `GET /metrics`
+Prometheus metrics endpoint. Exposes request latency, routing time, TTS TTFB, tool execution duration, and counters.
+
 ### `GET /status`
 Runtime health check with component status. Now includes `router` (shows `multi_agent_supervisor`), `semantic_memory`, and `tracing` fields.
 
@@ -304,8 +319,9 @@ Connection status for Spotify, Bedrock, TTS, and memory store.
 
 ```
 app/
-├── main.py                        # FastAPI app, routes, middleware
+├── main.py                        # FastAPI app, routes, middleware, /metrics
 ├── hub.py                         # Dependency wiring, request lifecycle
+├── worker.py                      # LangGraph worker service (microservice mode)
 ├── settings.py                    # Pydantic settings (env-driven)
 ├── schemas.py                     # Request/response models
 ├── core/
@@ -314,30 +330,24 @@ app/
 │   ├── brain.py                   # Bedrock Claude router + deterministic fast path
 │   ├── tool_runner.py             # Legacy tool dispatcher (used by quick_action path)
 │   ├── tracing.py                 # Langfuse observability (traces, generations, spans)
+│   ├── metrics.py                 # Prometheus metrics (histograms, counters)
+│   ├── search.py                  # Elasticsearch + Hybrid RRF search
 │   ├── embeddings.py              # Amazon Titan embedding wrapper
 │   ├── memory.py                  # Conversational memory (in-memory + Supabase + pgvector)
 │   ├── personality.py             # Quick replies, response rewriting
-│   ├── listener.py                # Always-on wake word + STT + playback
+│   ├── listener.py                # Always-on wake word + ElevenLabs Scribe STT + playback
 │   ├── audio_player.py            # sounddevice playback + 11Labs sound effects
 │   ├── device_registry.py         # Device → room → speaker resolution
 │   └── agents/
-│       ├── __init__.py            # Sub-agent package exports
 │       ├── music_agent.py         # Music domain ReAct sub-agent (14 Spotify tools)
 │       ├── info_agent.py          # Info domain ReAct sub-agent (weather, NBA, news, etc.)
 │       └── home_agent.py          # Home domain ReAct sub-agent (scenes, reminders, phone)
 ├── integrations/
 │   ├── tts.py                     # ElevenLabs streaming TTS + Polly fallback + TTFB tracking
 │   ├── spotify_controller.py      # Spotify Web API (search, playback, volume)
-│   ├── calendar_controller.py     # Google Calendar
-│   ├── weather.py                 # Weather via Open-Meteo
-│   ├── nba.py                     # NBA scores via ESPN
-│   ├── news.py                    # News headlines via NewsAPI + GNews
-│   ├── reminders_bridge.py        # iCloud Reminders
-│   ├── home_scene_controller.py   # Smart home scenes
-│   └── phone_bridge.py            # Private phone data
+│   └── ...                        # calendar, weather, nba, news, reminders, scenes, phone
 ├── static/
-│   ├── listen.html                # WebGL fluid dashboard
-│   └── audio/                     # TTS output + sound effects + cached phrases
+│   └── listen.html                # WebGL fluid dashboard
 ├── config/
 │   ├── device_map.yaml            # Device/room/speaker mapping
 │   └── scenes.yaml                # Home scene definitions
@@ -345,28 +355,57 @@ app/
     ├── session_repository.py      # Session persistence (Supabase + in-memory)
     └── preferences_repository.py  # User preferences
 
+docker/
+├── api.Dockerfile                 # FastAPI HTTP server container
+└── worker.Dockerfile              # LangGraph worker container
+
+k8s/
+├── kustomization.yaml             # Kustomize overlay (kubectl apply -k k8s/)
+├── namespace.yaml                 # ziri namespace
+├── configmap.yaml                 # Non-secret environment config
+├── secret.yaml                    # API key template
+├── api/                           # API Deployment (2 replicas) + NodePort Service
+├── worker/                        # Worker Deployment + ClusterIP Service
+├── postgres/                      # PostgreSQL StatefulSet + PVC + init SQL
+├── prometheus/                    # Prometheus Deployment + scrape config
+└── elasticsearch/                 # Elasticsearch single-node Deployment
+
 sql/
 ├── 001_init.sql                   # Base schema (sessions, conversation_turns, user_preferences)
-└── 002_vector_index.sql           # HNSW vector index + match_conversation_turns RPC
+├── 002_vector_index.sql           # HNSW vector index + match_conversation_turns RPC
+└── 003_fulltext_index.sql         # Optional tsvector GIN index for Postgres keyword search
 
 scripts/
-└── eval_tool_routing.py           # Offline routing accuracy evaluation (25 test cases)
+├── eval_tool_routing.py           # Offline routing accuracy evaluation (25 test cases)
+└── kind-setup.sh                  # Create kind cluster, build images, apply manifests
 
 tests/
-├── test_brain.py                  # Brain unit tests (deterministic routing)
-├── test_intent_behaviors.py       # Integration tests via FastAPI TestClient
+├── conftest.py                    # Shared fixtures (settings, memory, mocks)
+├── test_brain.py                  # Brain unit tests
+├── test_deterministic_routing.py  # Parametrized tests for all 200+ phrase patterns
+├── test_supervisor.py             # Supervisor classification + domain routing tests
+├── test_orchestrator.py           # LangGraph graph construction + node execution tests
+├── test_memory.py                 # InMemoryStore CRUD, isolation, eviction tests
+├── test_personality.py            # Quick reply pool + passthrough tests
 ├── test_api.py                    # API endpoint tests
+├── test_intent_behaviors.py       # Integration tests via FastAPI TestClient
 └── fixtures/
-    └── routing_eval.jsonl         # Evaluation test cases (input → expected tool + args)
+    └── routing_eval.jsonl         # 25 evaluation test cases
 
-docs/
-├── architecture.md                # Detailed architecture documentation
-├── deployment.md                  # Deployment guide
-└── ios_shortcut_flow.md           # iOS Siri Shortcuts integration
+.github/
+└── workflows/
+    └── ci.yml                     # CI pipeline: lint (ruff) → test (pytest) → build (Docker)
 ```
 
 ## Roadmap
 
+- [x] ElevenLabs Scribe v2 Realtime streaming STT
+- [x] Containerized microservices (Docker)
+- [x] Kubernetes local deployment (kind)
+- [x] CI/CD pipeline (GitHub Actions)
+- [x] Prometheus metrics and monitoring
+- [x] Elasticsearch hybrid search (keyword + semantic RRF)
+- [x] Comprehensive PyTest suite (272 tests)
 - [ ] ElevenLabs Conversational AI (real-time voice-to-voice)
 - [ ] Multi-voice contexts (different voices per room/mood)
 - [ ] Voice cloning for unique Ziri identity

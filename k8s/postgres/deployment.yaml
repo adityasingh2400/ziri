@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: ziri
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "ziri"
+            - name: POSTGRES_DB
+              value: "ziri"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ziri-secrets
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "ziri"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+        - name: init-scripts
+          configMap:
+            name: postgres-init
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: ziri
+data:
+  001_init.sql: |
+    CREATE EXTENSION IF NOT EXISTS vector;
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id bigserial PRIMARY KEY,
+      user_id text NOT NULL,
+      device_id text NOT NULL,
+      room text NOT NULL,
+      raw_text text NOT NULL,
+      request_ts timestamptz NOT NULL,
+      status text NOT NULL DEFAULT 'RECEIVED',
+      route_json jsonb,
+      tool_json jsonb,
+      response_json jsonb,
+      processed_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_user_created ON sessions(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS conversation_turns (
+      id bigserial PRIMARY KEY,
+      user_id text NOT NULL,
+      raw_text text NOT NULL,
+      intent_type text NOT NULL,
+      tool_name text NOT NULL,
+      assistant_speak text,
+      private_note text,
+      context_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+      embedding vector(1536),
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_turns_user_created ON conversation_turns(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS user_preferences (
+      user_id text PRIMARY KEY,
+      preferences jsonb NOT NULL DEFAULT '{}'::jsonb,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+  002_vector_index.sql: |
+    CREATE INDEX IF NOT EXISTS idx_turns_embedding_hnsw
+    ON conversation_turns
+    USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+
+    CREATE OR REPLACE FUNCTION match_conversation_turns(
+        query_embedding vector(1536),
+        match_user_id text,
+        match_count int DEFAULT 3
+    )
+    RETURNS TABLE (
+        id bigint,
+        user_id text,
+        raw_text text,
+        intent_type text,
+        tool_name text,
+        assistant_speak text,
+        context_json jsonb,
+        created_at timestamptz,
+        similarity float
+    )
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+        RETURN QUERY
+        SELECT
+            ct.id, ct.user_id, ct.raw_text, ct.intent_type, ct.tool_name,
+            ct.assistant_speak, ct.context_json, ct.created_at,
+            1 - (ct.embedding <=> query_embedding) AS similarity
+        FROM conversation_turns ct
+        WHERE ct.user_id = match_user_id AND ct.embedding IS NOT NULL
+        ORDER BY ct.embedding <=> query_embedding
+        LIMIT match_count;
+    END;
+    $$;

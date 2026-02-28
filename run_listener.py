@@ -8,6 +8,11 @@ Usage:
 
 from __future__ import annotations
 
+import os
+import certifi
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+
 import argparse
 import asyncio
 import logging
@@ -21,12 +26,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ziri: always-on voice agent")
     parser.add_argument("--no-listener", action="store_true", help="Start server without the wake word listener")
     parser.add_argument("--host", default="0.0.0.0", help="Server bind host (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=None, help="Server port (default: from .env AURA_PORT)")
+    parser.add_argument("--port", type=int, default=None, help="Server port (default: from .env ZIRI_PORT)")
     args = parser.parse_args()
 
     from app.settings import get_settings
     settings = get_settings()
-    port = args.port or settings.aura_port
+    port = args.port or settings.ziri_port
 
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),

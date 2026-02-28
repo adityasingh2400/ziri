@@ -1,12 +1,72 @@
 version: "3.9"
 
 services:
-  aura-hub:
-    build: .
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ziri
+      POSTGRES_PASSWORD: ziri
+      POSTGRES_DB: ziri
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
+      - ./sql/002_vector_index.sql:/docker-entrypoint-initdb.d/002_vector_index.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ziri"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://ziri:ziri@postgres:5432/ziri
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
     ports:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      WORKER_URL: http://worker:8001
+      DATABASE_URL: postgresql://ziri:ziri@postgres:5432/ziri
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      - worker
+      - elasticsearch
     volumes:
-      - ./:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      - ./app/static:/app/app/static
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms256m -Xmx256m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/var/lib/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  esdata:

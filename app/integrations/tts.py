@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from app.settings import Settings
 from app.core.tracing import trace_tts_span
+from app.core.metrics import TTS_TTFB
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,9 @@ class TTS:
                             return None
                         for chunk in resp.iter_bytes(chunk_size=4096):
                             if first_chunk:
-                                timing["ttfb_ms"] = (time.perf_counter() - stream_start) * 1000
+                                ttfb_ms = (time.perf_counter() - stream_start) * 1000
+                                timing["ttfb_ms"] = ttfb_ms
+                                TTS_TTFB.observe(ttfb_ms / 1000)
                                 first_chunk = False
                             buf.extend(chunk)
 

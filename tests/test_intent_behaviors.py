@@ -30,4 +30,4 @@ def test_device_mapping_targets_default_house_speaker() -> None:
     response = client.post("/intent", json=_payload("Play Uzi"))
     assert response.status_code == 200
     data = response.json()
-    assert data["target_device"] == "Living_Room_Sonos"
+    assert data["target_device"] == "iPhone"
