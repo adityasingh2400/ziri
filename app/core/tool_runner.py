@@ -13,12 +13,68 @@ from app.schemas import IntentRequest, RouterDecision, ToolResult
 
 import json
 import logging
+import subprocess
 from datetime import datetime, timezone
 from typing import Any
 
 from app.core.tracing import trace_llm_call
 
 logger = logging.getLogger(__name__)
+
+
+def _get_system_volume() -> int:
+    """Read macOS system volume (0-100)."""
+    out = subprocess.run(
+        ["osascript", "-e", "output volume of (get volume settings)"],
+        capture_output=True, text=True, timeout=5,
+    )
+    return int(out.stdout.strip()) if out.returncode == 0 else 50
+
+
+def _set_system_volume(percent: int) -> ToolResult:
+    """Set macOS system volume to an exact percentage."""
+    percent = max(0, min(100, percent))
+    try:
+        subprocess.run(
+            ["osascript", "-e", f"set volume output volume {percent}"],
+            capture_output=True, timeout=5, check=True,
+        )
+        return ToolResult(
+            ok=True, action_code="MUSIC_VOLUME",
+            speak_text=f"Volume set to {percent} percent.",
+            private_note="", payload={"volume_percent": percent},
+        )
+    except Exception as exc:
+        logger.exception("System volume set failed")
+        return ToolResult(
+            ok=False, action_code="MUSIC_ERROR",
+            speak_text="I couldn't change the volume.",
+            private_note=str(exc), error="system_volume_exception",
+        )
+
+
+def _adjust_system_volume(delta: int) -> ToolResult:
+    """Raise or lower macOS system volume by a delta."""
+    try:
+        current = _get_system_volume()
+        new_vol = max(0, min(100, current + delta))
+        subprocess.run(
+            ["osascript", "-e", f"set volume output volume {new_vol}"],
+            capture_output=True, timeout=5, check=True,
+        )
+        direction = "up" if delta >= 0 else "down"
+        return ToolResult(
+            ok=True, action_code="MUSIC_VOLUME",
+            speak_text=f"Volume {direction} to {new_vol} percent.",
+            private_note="", payload={"volume_percent": new_vol},
+        )
+    except Exception as exc:
+        logger.exception("System volume adjust failed")
+        return ToolResult(
+            ok=False, action_code="MUSIC_ERROR",
+            speak_text="I couldn't change the volume.",
+            private_note=str(exc), error="system_volume_exception",
+        )
 
 
 class ToolRunner:
@@ -63,11 +119,7 @@ class ToolRunner:
 
         if decision.tool_name == "spotify.adjust_volume":
             delta = int(decision.tool_args.get("delta_percent", 10))
-            return self.spotify.adjust_volume(
-                delta_percent=delta,
-                speaker_name=device_context.default_speaker,
-                spotify_device_id=device_context.spotify_device_id,
-            )
+            return _adjust_system_volume(delta)
 
         if decision.tool_name == "spotify.pause":
             return self.spotify.pause(
@@ -106,11 +158,7 @@ class ToolRunner:
 
         if decision.tool_name == "spotify.set_volume":
             percent = int(decision.tool_args.get("percent", 50))
-            return self.spotify.set_volume(
-                percent=percent,
-                speaker_name=device_context.default_speaker,
-                spotify_device_id=device_context.spotify_device_id,
-            )
+            return _set_system_volume(percent)
 
         if decision.tool_name == "spotify.queue":
             query = str(decision.tool_args.get("query") or req.raw_text)

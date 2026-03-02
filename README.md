@@ -68,6 +68,7 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
 - **Live partial transcription** — words appear on the dashboard as you speak via realtime WebSocket partials
 - **ElevenLabs streaming TTS** — 192kbps MP3 via the `/stream` endpoint with `optimize_streaming_latency=3`
 - **Custom 11Labs sound effects** — wake word blip and thinking pulse generated with ElevenLabs SFX
+- **macOS system volume control** — "louder", "quieter", "set volume to X" control system output volume via osascript
 - **Spotify volume ducking** — music drops to 20% on wake, gradually restores after response
 - **Silent quick commands** — "skip", "pause", "resume" execute instantly with no voice response
 
@@ -78,7 +79,7 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
   - **MusicAgent** — handles all 14 Spotify tools (play, pause, skip, volume, queue, shuffle, repeat, like, etc.)
   - **InfoAgent** — handles weather, NBA scores, news, calendar, time/date, and general Q&A via Claude
   - **HomeAgent** — handles home automation scenes, iCloud reminders, and private phone data
-- **Zero-latency fast path** — deterministic phrase matching (200+ patterns) routes common commands directly to execution, bypassing the LLM entirely for sub-100ms responses
+- **Zero-latency fast path** — deterministic phrase matching (200+ patterns) routes all recognized commands directly to execution, bypassing the LLM entirely for sub-100ms responses
 - **LangGraph orchestration** — `supervisor → conditional_edges → [music|info|home|quick] → respond` with full state passing
 - **Graceful degradation** — falls back to legacy linear pipeline if LangGraph is unavailable; in-memory stores if Supabase is unreachable; heuristic routing if Bedrock is down
 
@@ -99,7 +100,8 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
 - **Zero-overhead when disabled** — all tracing is no-op when Langfuse keys are not configured; Prometheus degrades gracefully without the package
 
 ### Integrations
-- **Spotify** — search, play, pause, skip, queue, volume, shuffle, repeat, like, device control
+- **Spotify** — search, play, pause, skip, queue, shuffle, repeat, like, device control
+- **macOS system volume** — volume up/down/set via osascript for global audio control
 - **Google Calendar** — today's events, upcoming schedule
 - **iCloud Reminders** — create reminders via macOS bridge
 - **Home Scenes** — trigger smart home scenes (lights, movie mode, goodnight)
@@ -205,7 +207,7 @@ Ziri uses a **Supervisor-Worker multi-agent pattern** with **ReAct reasoning loo
 - **MusicAgent** — all `spotify.*` tools (14 tools)
 - **InfoAgent** — `general.answer`, `weather.*`, `nba.*`, `news.*`, `calendar.today`, `time.*`
 - **HomeAgent** — `home.scene`, `reminders.create`, `private.phone_data`
-- **QuickAction** — deterministic matches (pause, skip, volume, etc.) execute with zero LLM calls
+- **QuickAction** — all deterministic matches (pause, skip, volume, weather, calendar, reminders, scenes, etc.) execute with zero LLM calls
 
 ## Semantic Memory
 

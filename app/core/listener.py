@@ -316,10 +316,8 @@ class Listener:
             import threading
             threading.Thread(target=self._start_elevenlabs_ws, daemon=True).start()
 
-        if self.settings.listener_chime_enabled:
-            from app.core.audio_player import play_chime
-            play_chime(blocking=True)
-            logger.info("[DEBUG] Chime done, %.2fs since wake", time.monotonic() - self._listen_start)
+        # Chime disabled — sd.play() opens an OutputStream that conflicts with
+        # the Bluetooth mic InputStream, killing audio capture for ~3 seconds.
 
     # ------------------------------------------------------------------
     # ElevenLabs Realtime STT (official SDK)

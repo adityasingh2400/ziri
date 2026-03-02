@@ -102,7 +102,7 @@ class Supervisor:
         if det is not None:
             domain = tool_to_domain(det.tool_name)
             return SupervisorResult(
-                domain="quick" if domain == "music" and det.confidence >= 0.9 else domain,
+                domain="quick" if det.confidence >= 0.9 else domain,
                 query=req.raw_text,
                 deterministic_decision=det,
             )

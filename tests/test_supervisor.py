@@ -25,32 +25,32 @@ def test_deterministic_pause_routes_to_quick(settings, device_context, make_requ
     assert result.deterministic_decision.tool_name == "spotify.pause"
 
 
-def test_deterministic_calendar_routes_to_info(settings, device_context, make_request) -> None:
-    """Non-music deterministic matches keep their natural domain."""
+def test_deterministic_calendar_routes_to_quick(settings, device_context, make_request) -> None:
+    """All high-confidence deterministic matches route to 'quick' for direct execution."""
     memory = InMemoryStore()
     sv = Supervisor(settings=settings, memory=memory, bedrock_client=None)
     result = sv.classify(make_request("what's on my calendar"), device_context)
 
-    assert result.domain == "info"
+    assert result.domain == "quick"
     assert result.deterministic_decision is not None
     assert result.deterministic_decision.tool_name == "calendar.today"
 
 
-def test_deterministic_reminder_routes_to_home(settings, device_context, make_request) -> None:
+def test_deterministic_reminder_routes_to_quick(settings, device_context, make_request) -> None:
     memory = InMemoryStore()
     sv = Supervisor(settings=settings, memory=memory, bedrock_client=None)
     result = sv.classify(make_request("remind me to buy groceries"), device_context)
 
-    assert result.domain == "home"
+    assert result.domain == "quick"
     assert result.deterministic_decision.tool_name == "reminders.create"
 
 
-def test_deterministic_scene_routes_to_home(settings, device_context, make_request) -> None:
+def test_deterministic_scene_routes_to_quick(settings, device_context, make_request) -> None:
     memory = InMemoryStore()
     sv = Supervisor(settings=settings, memory=memory, bedrock_client=None)
     result = sv.classify(make_request("movie mode"), device_context)
 
-    assert result.domain == "home"
+    assert result.domain == "quick"
 
 
 # ── Quick-action threshold ───────────────────────────────────────────────
