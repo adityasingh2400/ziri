@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     langfuse_host: str = "https://cloud.langfuse.com"
 
     # Semantic memory (pgvector)
-    embedding_model_id: str = "amazon.titan-embed-text-v1:0"
+    embedding_model_id: str = "amazon.titan-embed-text-v2:0"
     semantic_memory_top_k: int = 3
     semantic_memory_enabled: bool = True
 

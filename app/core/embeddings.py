@@ -10,17 +10,22 @@ logger = logging.getLogger(__name__)
 def embed_text(bedrock_client: Any, model_id: str, text: str) -> list[float] | None:
     """Generate an embedding vector using Amazon Titan Embeddings via Bedrock.
 
-    Returns a list of floats (1536-dim for Titan v1) or None on failure.
+    Returns a list of floats (1024-dim for Titan V2, 1536-dim for V1) or None on failure.
     """
     if bedrock_client is None:
         return None
 
     try:
+        payload: dict[str, Any] = {"inputText": text}
+        if "v2" in model_id:
+            payload["dimensions"] = 1024
+            payload["normalize"] = True
+
         response = bedrock_client.invoke_model(
             modelId=model_id,
             contentType="application/json",
             accept="application/json",
-            body=json.dumps({"inputText": text}),
+            body=json.dumps(payload),
         )
         body = json.loads(response["body"].read())
         return body.get("embedding")
