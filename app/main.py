@@ -252,12 +252,19 @@ async def siri_intent(text: str = Query(..., min_length=1, max_length=3000)) -> 
 # ---------------------------------------------------------------------------
 
 _listener_ref: Any = None
+_vision_ref: Any = None
 
 
 def set_listener(listener: Any) -> None:
     """Called by run_listener.py to make the listener accessible to the dashboard."""
     global _listener_ref
     _listener_ref = listener
+
+
+def set_vision(vision: Any) -> None:
+    """Called by run_listener.py to make the gesture recognizer accessible."""
+    global _vision_ref
+    _vision_ref = vision
 
 
 @app.get("/dashboard/api")
@@ -287,3 +294,41 @@ _dashboard_html = _static_dir / "dashboard.html"
 async def dashboard_page() -> HTMLResponse:
     """Redirect to /listen which serves as the combined dashboard."""
     return HTMLResponse('<script>location.href="/listen"</script>')
+
+
+# ---------------------------------------------------------------------------
+# Vision gesture status + MJPEG stream
+# ---------------------------------------------------------------------------
+
+
+@app.get("/vision/status")
+async def vision_status() -> dict[str, Any]:
+    """Status and recent gesture history from the vision module."""
+    if _vision_ref is None:
+        return {"running": False, "active": False, "gesture_count": 0, "history": []}
+    return _vision_ref.get_status()
+
+
+@app.get("/vision/feed")
+async def vision_feed() -> Response:
+    """MJPEG stream of the camera with landmark overlay."""
+    if _vision_ref is None:
+        return Response(status_code=503, content=b"Vision module not running")
+
+    import asyncio as _aio
+
+    async def _generate():
+        while True:
+            frame = _vision_ref.get_jpeg_frame()
+            if frame:
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+                )
+            await _aio.sleep(0.04)
+
+    from starlette.responses import StreamingResponse
+    return StreamingResponse(
+        _generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )

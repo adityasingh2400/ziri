@@ -25,6 +25,7 @@ import uvicorn
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ziri: always-on voice agent")
     parser.add_argument("--no-listener", action="store_true", help="Start server without the wake word listener")
+    parser.add_argument("--no-vision", action="store_true", help="Start server without the gesture vision module")
     parser.add_argument("--host", default="0.0.0.0", help="Server bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=None, help="Server port (default: from .env ZIRI_PORT)")
     args = parser.parse_args()
@@ -42,7 +43,7 @@ def main() -> None:
 
     # Suppress noisy polling endpoints from uvicorn access log
     _QUIET_PATHS = {"/spotify/now-playing", "/dashboard/api", "/debug/connections",
-                    "/spotify/art-proxy", "/favicon.ico"}
+                    "/spotify/art-proxy", "/favicon.ico", "/vision/status", "/vision/feed"}
 
     class _QuietAccessFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
@@ -71,6 +72,17 @@ def main() -> None:
     from app.main import set_listener
     set_listener(listener)
 
+    vision = None
+    if not args.no_vision:
+        try:
+            from app.core.vision import GestureRecognizer
+            from app.main import set_vision
+            vision = GestureRecognizer(hub=hub, settings=settings)
+            set_vision(vision)
+            logger.info("Vision gesture module enabled")
+        except Exception as exc:
+            logger.warning("Vision module unavailable (camera/mediapipe): %s", exc)
+
     config = uvicorn.Config(
         app,
         host=args.host,
@@ -80,9 +92,18 @@ def main() -> None:
     )
     server = uvicorn.Server(config)
 
+    _shutting_down = False
+
     def _shutdown(sig, frame):
-        logger.info("Shutting down...")
+        nonlocal _shutting_down
+        if _shutting_down:
+            logger.info("Force quit")
+            os._exit(1)
+        _shutting_down = True
+        logger.info("Shutting down... (Ctrl+C again to force quit)")
         listener.stop()
+        if vision:
+            vision.stop()
         server.should_exit = True
 
     signal.signal(signal.SIGINT, _shutdown)
@@ -90,7 +111,11 @@ def main() -> None:
 
     async def _run():
         listener.start(loop=asyncio.get_running_loop())
+        if vision:
+            vision.start(loop=asyncio.get_running_loop())
         await server.serve()
+        if vision:
+            vision.stop()
         listener.stop()
 
     try:
