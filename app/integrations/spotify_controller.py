@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from typing import Any
 
 from app.settings import Settings
@@ -15,6 +16,28 @@ except Exception:  # pragma: no cover - optional import for local dev
     SpotifyOAuth = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# macOS system volume helpers (0-100 integer scale)
+# ---------------------------------------------------------------------------
+
+def _get_mac_volume() -> int:
+    """Return current macOS output volume (0-100)."""
+    result = subprocess.run(
+        ["osascript", "-e", "output volume of (get volume settings)"],
+        capture_output=True, text=True, timeout=5,
+    )
+    return int(result.stdout.strip())
+
+
+def _set_mac_volume(percent: int) -> None:
+    """Set macOS output volume (0-100)."""
+    percent = max(0, min(100, int(percent)))
+    subprocess.run(
+        ["osascript", "-e", f"set volume output volume {percent}"],
+        capture_output=True, text=True, timeout=5,
+    )
 
 
 class SpotifyController:
@@ -325,33 +348,10 @@ class SpotifyController:
         speaker_name: str | None = None,
         spotify_device_id: str | None = None,
     ) -> ToolResult:
-        client, can_control_playback = self._build_client()
-        if not client or not can_control_playback:
-            return ToolResult(
-                ok=False,
-                action_code="MUSIC_ERROR",
-                speak_text="",
-                private_note="Volume control requires Spotify playback scopes and user auth.",
-                error="missing_user_token",
-            )
-
         try:
-            playback = client.current_playback() or {}
-            current_volume = (
-                playback.get("device", {}).get("volume_percent") if playback.get("device") else None
-            )
-            if current_volume is None:
-                current_volume = 50
-            new_volume = max(0, min(100, int(current_volume) + int(delta_percent)))
-            target_device = self._ensure_active_device(
-                client=client,
-                explicit_device_id=spotify_device_id,
-                speaker_name=speaker_name,
-            )
-            if target_device:
-                client.volume(new_volume, device_id=target_device)
-            else:
-                client.volume(new_volume)
+            current_volume = _get_mac_volume()
+            new_volume = max(0, min(100, current_volume + int(delta_percent)))
+            _set_mac_volume(new_volume)
 
             direction = "up" if delta_percent >= 0 else "down"
             return ToolResult(
@@ -362,13 +362,13 @@ class SpotifyController:
                 payload={"volume_percent": new_volume},
             )
         except Exception as exc:
-            logger.exception("Spotify volume adjustment failed")
+            logger.exception("Mac volume adjustment failed")
             return ToolResult(
                 ok=False,
                 action_code="MUSIC_ERROR",
-                speak_text="I could not change Spotify volume.",
+                speak_text="I could not change the volume.",
                 private_note=str(exc),
-                error="spotify_volume_exception",
+                error="mac_volume_exception",
             )
 
     def pause(
@@ -392,6 +392,14 @@ class SpotifyController:
                 explicit_device_id=spotify_device_id,
                 speaker_name=speaker_name,
             )
+            playback = client.current_playback() or {}
+            if not playback.get("is_playing", False):
+                return ToolResult(
+                    ok=True,
+                    action_code="MUSIC_PAUSE",
+                    speak_text="Already paused.",
+                    private_note="",
+                )
             if target_device:
                 client.pause_playback(device_id=target_device)
             else:
@@ -530,6 +538,9 @@ class SpotifyController:
 
         try:
             target = self._ensure_active_device(client, spotify_device_id, speaker_name)
+            playback = client.current_playback() or {}
+            if playback.get("is_playing", False):
+                return ToolResult(ok=True, action_code="MUSIC_RESUME", speak_text="Already playing.", private_note="")
             if target:
                 client.start_playback(device_id=target)
             else:
@@ -594,21 +605,13 @@ class SpotifyController:
         speaker_name: str | None = None,
         spotify_device_id: str | None = None,
     ) -> ToolResult:
-        client, err = self._require_playback_client("set_volume")
-        if err:
-            return ToolResult(ok=False, action_code="MUSIC_ERROR", speak_text="", private_note="Volume requires user auth.", error=err)
-
         percent = max(0, min(100, int(percent)))
         try:
-            target = self._ensure_active_device(client, spotify_device_id, speaker_name)
-            if target:
-                client.volume(percent, device_id=target)
-            else:
-                client.volume(percent)
+            _set_mac_volume(percent)
             return ToolResult(ok=True, action_code="MUSIC_VOLUME", speak_text=f"Volume set to {percent} percent.", private_note="", payload={"volume_percent": percent})
         except Exception as exc:
-            logger.exception("Spotify set_volume failed")
-            return ToolResult(ok=False, action_code="MUSIC_ERROR", speak_text="I could not set the volume.", private_note=str(exc), error="spotify_set_volume_exception")
+            logger.exception("Mac set_volume failed")
+            return ToolResult(ok=False, action_code="MUSIC_ERROR", speak_text="I could not set the volume.", private_note=str(exc), error="mac_set_volume_exception")
 
     # ------------------------------------------------------------------
     # Audio ducking – lower volume while Ziri is listening/thinking/speaking
@@ -617,17 +620,9 @@ class SpotifyController:
     _pre_duck_volume: int | None = None
 
     def duck(self, duck_percent: int = 25) -> dict[str, Any]:
-        """Lower Spotify volume for voice interaction. Returns the pre-duck volume."""
-        client, can_control = self._build_client()
-        if not client or not can_control:
-            return {"ok": False, "error": "no_client"}
-
+        """Lower macOS system volume for voice interaction."""
         try:
-            playback = client.current_playback() or {}
-            device = playback.get("device") or {}
-            current_vol = device.get("volume_percent")
-            if current_vol is None:
-                return {"ok": False, "error": "no_playback"}
+            current_vol = _get_mac_volume()
 
             if current_vol <= duck_percent:
                 self._pre_duck_volume = current_vol
@@ -635,28 +630,23 @@ class SpotifyController:
 
             self._pre_duck_volume = current_vol
             target_vol = max(0, min(100, duck_percent))
-            client.volume(target_vol)
-            logger.info("Ducked Spotify volume %d → %d", current_vol, target_vol)
+            _set_mac_volume(target_vol)
+            logger.info("Ducked Mac volume %d → %d", current_vol, target_vol)
             return {"ok": True, "previous_volume": current_vol, "ducked_to": target_vol}
         except Exception as exc:
-            logger.exception("Spotify duck failed")
+            logger.exception("Mac duck failed")
             return {"ok": False, "error": str(exc)}
 
     def unduck(self) -> dict[str, Any]:
-        """Gradually restore Spotify volume to the pre-duck level."""
+        """Gradually restore macOS system volume to the pre-duck level."""
         import time as _time
-
-        client, can_control = self._build_client()
-        if not client or not can_control:
-            return {"ok": False, "error": "no_client"}
 
         restore_vol = self._pre_duck_volume
         if restore_vol is None:
             return {"ok": False, "error": "not_ducked"}
 
         try:
-            playback = client.current_playback() or {}
-            current_vol = (playback.get("device") or {}).get("volume_percent", 25)
+            current_vol = _get_mac_volume()
 
             steps = 4
             diff = restore_vol - current_vol
@@ -666,15 +656,15 @@ class SpotifyController:
 
             for i in range(1, steps + 1):
                 step_vol = current_vol + int(diff * (i / steps))
-                client.volume(min(step_vol, 100))
+                _set_mac_volume(min(step_vol, 100))
                 if i < steps:
                     _time.sleep(0.3)
 
-            logger.info("Unducked Spotify volume %d → %d (ramped)", current_vol, restore_vol)
+            logger.info("Unducked Mac volume %d → %d (ramped)", current_vol, restore_vol)
             self._pre_duck_volume = None
             return {"ok": True, "restored_volume": restore_vol}
         except Exception as exc:
-            logger.exception("Spotify unduck failed")
+            logger.exception("Mac unduck failed")
             return {"ok": False, "error": str(exc)}
 
     def add_to_queue(

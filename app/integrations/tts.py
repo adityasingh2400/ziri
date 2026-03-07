@@ -27,6 +27,7 @@ class TTS:
         self._eleven_ok = bool(settings.elevenlabs_api_key)
         self._polly = None
         self._cache: dict[str, str] = {}
+        self._http: "httpx.Client | None" = None
 
         if not self._eleven_ok and settings.enable_polly:
             try:
@@ -41,6 +42,13 @@ class TTS:
                 logger.warning("Polly init failed: %s", exc)
 
         self._load_existing_cache()
+
+    def _get_http(self) -> "httpx.Client":
+        """Return a long-lived httpx client for ElevenLabs TTS requests."""
+        if self._http is None or self._http.is_closed:
+            import httpx
+            self._http = httpx.Client(timeout=20)
+        return self._http
 
     def _cache_key(self, text: str) -> str:
         return hashlib.md5(text.lower().strip().encode()).hexdigest()
@@ -97,8 +105,6 @@ class TTS:
     def _elevenlabs_generate(self, text: str, trace: Any = None) -> bytes | None:
         """Stream audio from ElevenLabs, collecting chunks as they arrive."""
         try:
-            import httpx
-
             s = self.settings
             url = (
                 f"https://api.elevenlabs.io/v1/text-to-speech/{s.elevenlabs_voice_id}/stream"
@@ -128,23 +134,23 @@ class TTS:
                 buf = bytearray()
                 first_chunk = True
                 stream_start = time.perf_counter()
-                with httpx.Client(timeout=20) as client:
-                    with client.stream("POST", url, headers=headers, json=body) as resp:
-                        if resp.status_code != 200:
-                            resp.read()
-                            logger.warning(
-                                "ElevenLabs TTS failed (status %s): %s",
-                                resp.status_code,
-                                resp.text[:200],
-                            )
-                            return None
-                        for chunk in resp.iter_bytes(chunk_size=4096):
-                            if first_chunk:
-                                ttfb_ms = (time.perf_counter() - stream_start) * 1000
-                                timing["ttfb_ms"] = ttfb_ms
-                                TTS_TTFB.observe(ttfb_ms / 1000)
-                                first_chunk = False
-                            buf.extend(chunk)
+                client = self._get_http()
+                with client.stream("POST", url, headers=headers, json=body) as resp:
+                    if resp.status_code != 200:
+                        resp.read()
+                        logger.warning(
+                            "ElevenLabs TTS failed (status %s): %s",
+                            resp.status_code,
+                            resp.text[:200],
+                        )
+                        return None
+                    for chunk in resp.iter_bytes(chunk_size=4096):
+                        if first_chunk:
+                            ttfb_ms = (time.perf_counter() - stream_start) * 1000
+                            timing["ttfb_ms"] = ttfb_ms
+                            TTS_TTFB.observe(ttfb_ms / 1000)
+                            first_chunk = False
+                        buf.extend(chunk)
 
                 if not buf:
                     logger.warning("ElevenLabs TTS returned empty audio")

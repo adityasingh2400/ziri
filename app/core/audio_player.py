@@ -14,31 +14,43 @@ import soundfile as sf
 logger = logging.getLogger(__name__)
 
 _AUDIO_ROOT = Path(__file__).resolve().parent.parent / "static" / "audio"
-_CHIME_FILE = _AUDIO_ROOT / "Single_short_soft_di_#2-1772184508490.mp3"
-_THINKING_FILE = _AUDIO_ROOT / "Looping_beeping_sexy_#4-1772184390291.mp3"
 
 _MIN_CHIME_VOLUME = 0.85
 
 
-# ---- Wake word chime (from 11Labs sound effect) ----
+# ---- Wake word chime ----
 
 _CHIME_SAMPLES: tuple[np.ndarray, int] | None = None
+_CHIME_FILE: Path | None = None
 
 
-def _get_chime() -> tuple[np.ndarray, int]:
+def set_chime_file(path: str | Path) -> None:
+    """Configure a custom chime sound file. Resets cached samples."""
+    global _CHIME_FILE, _CHIME_SAMPLES
+    _CHIME_FILE = Path(path) if path else None
+    _CHIME_SAMPLES = None
+
+
+def _get_chime() -> tuple[np.ndarray, int] | None:
     global _CHIME_SAMPLES
-    if _CHIME_SAMPLES is None:
-        data, sr = sf.read(str(_CHIME_FILE), dtype="float32")
-        peak = np.abs(data).max()
-        if 0 < peak < _MIN_CHIME_VOLUME:
-            data = data * (_MIN_CHIME_VOLUME / peak)
-        _CHIME_SAMPLES = (data, sr)
+    if _CHIME_SAMPLES is not None:
+        return _CHIME_SAMPLES
+    if _CHIME_FILE is None or not _CHIME_FILE.exists():
+        return None
+    data, sr = sf.read(str(_CHIME_FILE), dtype="float32")
+    peak = np.abs(data).max()
+    if 0 < peak < _MIN_CHIME_VOLUME:
+        data = data * (_MIN_CHIME_VOLUME / peak)
+    _CHIME_SAMPLES = (data, sr)
     return _CHIME_SAMPLES
 
 
 def play_chime(blocking: bool = False) -> None:
-    """Play the wake-word confirmation blip."""
-    data, sr = _get_chime()
+    """Play the wake-word confirmation blip. No-op if no chime file configured."""
+    samples = _get_chime()
+    if samples is None:
+        return
+    data, sr = samples
     if blocking:
         sd.play(data, samplerate=sr)
         sd.wait()
@@ -59,27 +71,41 @@ def play_audio_file(path: str | Path, blocking: bool = True) -> None:
         sd.wait()
 
 
-# ---- Thinking loop (from 11Labs sound effect) ----
+# ---- Thinking loop ----
 
 _THINKING_SAMPLES: tuple[np.ndarray, int] | None = None
+_THINKING_FILE: Path | None = None
 _thinking_stop = threading.Event()
 _thinking_thread: threading.Thread | None = None
 
 
-def _get_thinking() -> tuple[np.ndarray, int]:
+def set_thinking_file(path: str | Path) -> None:
+    """Configure a custom thinking sound file. Resets cached samples."""
+    global _THINKING_FILE, _THINKING_SAMPLES
+    _THINKING_FILE = Path(path) if path else None
+    _THINKING_SAMPLES = None
+
+
+def _get_thinking() -> tuple[np.ndarray, int] | None:
     global _THINKING_SAMPLES
-    if _THINKING_SAMPLES is None:
-        data, sr = sf.read(str(_THINKING_FILE), dtype="float32")
-        _THINKING_SAMPLES = (data, sr)
+    if _THINKING_SAMPLES is not None:
+        return _THINKING_SAMPLES
+    if _THINKING_FILE is None or not _THINKING_FILE.exists():
+        return None
+    data, sr = sf.read(str(_THINKING_FILE), dtype="float32")
+    _THINKING_SAMPLES = (data, sr)
     return _THINKING_SAMPLES
 
 
 def start_thinking_sound() -> None:
-    """Start looping the thinking sound effect. Call stop_thinking_sound() to end."""
+    """Start looping the thinking sound effect. No-op if no file configured."""
     global _thinking_thread
     stop_thinking_sound()
+    samples = _get_thinking()
+    if samples is None:
+        return
     _thinking_stop.clear()
-    data, sr = _get_thinking()
+    data, sr = samples
 
     def _loop():
         while not _thinking_stop.is_set():

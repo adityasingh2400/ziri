@@ -6,6 +6,9 @@ State machine:
     Transcribing  -->  (transcript ready)  -->  Processing
     Processing  -->  (audio response)  -->  Speaking
     Speaking  -->  (playback done)  -->  Idle
+
+End-of-speech uses Silero VAD (ONNX) for robust utterance boundary
+detection that works in noisy rooms with background chatter.
 """
 
 from __future__ import annotations
@@ -30,12 +33,17 @@ logger = logging.getLogger(__name__)
 TARGET_RATE = 16000
 MIC_CHANNELS = 1
 WAKEWORD_CHUNK = 1280  # 80ms at 16kHz (openwakeword requirement)
-MAX_LISTEN_SECONDS = 12
-SILENCE_THRESHOLD_SECONDS = 1.2
-ENERGY_SILENCE_THRESHOLD = 300
+VAD_CHUNK = 512         # 32ms at 16kHz (Silero VAD requirement)
+MAX_LISTEN_SECONDS = 10
 MAX_RETRIES = 5
 RETRY_DELAY = 3.0
 MAX_HISTORY = 50
+
+# --------------- Silero VAD tuning ---------------
+VAD_THRESHOLD = 0.40            # prob above which a 32ms chunk is "speech"
+VAD_SILENCE_AFTER_SPEECH = 0.55 # seconds of non-speech after user stops → end
+VAD_NO_SPEECH_TIMEOUT = 3.0     # abort if nobody speaks within this window
+VAD_MIN_SPEECH_CHUNKS = 5       # ~160ms of confirmed speech before allowing end
 
 
 class InteractionRecord:
@@ -94,6 +102,7 @@ class Listener:
 
         self._wakeword_model = None
         self._whisper_model = None
+        self._vad_model = None
 
         self._audio_buffer: collections.deque[np.ndarray] = collections.deque()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -105,6 +114,22 @@ class Listener:
         self._last_active_ts: float = 0
         self._last_partial_ts: float = 0
         self.history: collections.deque[InteractionRecord] = collections.deque(maxlen=MAX_HISTORY)
+
+    # ------------------------------------------------------------------
+    # Model loaders
+    # ------------------------------------------------------------------
+
+    def _ensure_vad(self):
+        """Load Silero VAD (ONNX) once. ~2 MB model, <1 ms per chunk."""
+        if self._vad_model is not None:
+            return
+        from silero_vad import load_silero_vad
+        self._vad_model = load_silero_vad(onnx=True)
+        import torch
+        self._torch = torch
+        self._vad_tensor = torch.zeros(VAD_CHUNK, dtype=torch.float32)
+        self._vad_np_buf = np.zeros(VAD_CHUNK, dtype=np.float32)
+        logger.info("Silero VAD loaded (ONNX)")
 
     def _ensure_wakeword(self):
         if self._wakeword_model is not None:
@@ -153,6 +178,7 @@ class Listener:
         self._running = True
         self._ensure_wakeword()
         self._ensure_whisper()
+        self._ensure_vad()
         self._native_rate = self._detect_mic_rate()
         self._started_at = datetime.now(timezone.utc).isoformat()
         logger.info("Listener starting (wake word: %s)", self.settings.wake_word_model)
@@ -195,6 +221,7 @@ class Listener:
         native_blocksize = int(native_rate * 0.03)  # 30ms in native samples
 
         ww_buffer = np.zeros(0, dtype=np.int16)
+        vad_buffer = np.zeros(0, dtype=np.int16)
 
         def _audio_callback(indata: np.ndarray, frames: int, time_info, status):
             if status:
@@ -221,7 +248,7 @@ class Listener:
                     logger.info("Microphone stream opened successfully")
                     while self._running:
                         if not self._audio_buffer:
-                            time.sleep(0.01)
+                            time.sleep(0.002)
                             continue
 
                         chunk = self._audio_buffer.popleft()
@@ -239,10 +266,18 @@ class Listener:
                                 self._send_audio_to_elevenlabs(chunk)
                             else:
                                 self._maybe_partial_transcribe()
-                            self._check_end_of_speech(chunk)
+
+                            vad_buffer = np.concatenate([vad_buffer, chunk])
+                            while len(vad_buffer) >= VAD_CHUNK:
+                                vad_frame = vad_buffer[:VAD_CHUNK]
+                                vad_buffer = vad_buffer[VAD_CHUNK:]
+                                self._vad_step(vad_frame)
+                                if self.state != State.LISTENING:
+                                    vad_buffer = np.zeros(0, dtype=np.int16)
+                                    break
 
                         elif self.state in (State.TRANSCRIBING, State.PROCESSING, State.SPEAKING):
-                            pass  # drain buffer, ignore audio
+                            vad_buffer = np.zeros(0, dtype=np.int16)
 
                     return  # clean exit
 
@@ -293,7 +328,6 @@ class Listener:
         logger.info("[DEBUG] === STATE -> LISTENING ===")
         self._capture_frames: list[np.ndarray] = []
         self._listen_start = time.monotonic()
-        self._silence_start: float | None = None
         self._current_transcript = ""
         self._current_response = ""
         self._last_active_ts = time.time()
@@ -301,6 +335,13 @@ class Listener:
         self._partial_busy = False
         self._el_chunks_sent = 0
         self._el_chunks_backlogged = 0
+
+        # VAD sub-state for end-of-speech detection
+        self._vad_speech_started = False
+        self._vad_speech_chunks = 0
+        self._vad_silence_start: float | None = None
+        if self._vad_model is not None:
+            self._vad_model.reset_states()
 
         # ElevenLabs realtime STT WebSocket state
         self._el_ws = None
@@ -341,7 +382,7 @@ class Listener:
                         sample_rate=TARGET_RATE,
                         language_code="en",
                         commit_strategy=CommitStrategy.VAD,
-                        vad_silence_threshold_secs=1.2,
+                        vad_silence_threshold_secs=0.5,
                     )
                 )
                 self._el_connection = connection
@@ -491,7 +532,8 @@ class Listener:
             if self._whisper_model == "elevenlabs":
                 partial = self._transcribe_elevenlabs(audio)
             else:
-                segments, _ = self._whisper_model.transcribe(
+                model = self._ensure_local_whisper()
+                segments, _ = model.transcribe(
                     audio, language="en", beam_size=1, vad_filter=False,
                     initial_prompt=self._TRANSCRIPTION_PROMPT,
                 )
@@ -513,32 +555,66 @@ class Listener:
         return False
 
     # ------------------------------------------------------------------
-    # Listening -> Transcribing  (energy-based silence detection)
+    # Listening -> Transcribing  (Silero VAD end-of-speech detection)
+    #
+    # Sub-states within LISTENING:
+    #   1. WAITING  – wake word just fired, waiting for user to start talking
+    #   2. ACTIVE   – user is mid-utterance (VAD confirms speech)
+    #   3. TRAILING – user may have stopped; counting consecutive non-speech
+    #                 chunks. If the gap exceeds VAD_SILENCE_AFTER_SPEECH → done.
+    #                 If speech resumes → back to ACTIVE.
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _rms_energy(samples: np.ndarray) -> float:
-        """Root-mean-square energy of an int16 audio chunk."""
-        return float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
-
-    def _check_end_of_speech(self, chunk: np.ndarray) -> None:
+    def _vad_step(self, frame: np.ndarray) -> None:
+        """Run one 32 ms VAD frame through Silero and drive end-of-speech logic."""
         elapsed = time.monotonic() - self._listen_start
+
         if elapsed > MAX_LISTEN_SECONDS:
             logger.info("Max listen time reached (%.1fs)", elapsed)
             self._transition_to_transcribing()
             return
 
-        energy = self._rms_energy(chunk)
-        is_speech = energy > ENERGY_SILENCE_THRESHOLD
+        # Reuse pre-allocated tensor to avoid allocation per chunk
+        np.divide(frame, 32768.0, out=self._vad_np_buf)
+        self._vad_tensor[:] = self._torch.from_numpy(self._vad_np_buf)
+        prob = self._vad_model(self._vad_tensor, TARGET_RATE).item()
 
+        is_speech = prob >= VAD_THRESHOLD
+
+        if not self._vad_speech_started:
+            # --- WAITING: no speech yet after wake word ---
+            if is_speech:
+                self._vad_speech_started = True
+                self._vad_speech_chunks = 1
+                self._vad_silence_start = None
+                logger.info("VAD: speech started at %.2fs (prob=%.2f)", elapsed, prob)
+            elif elapsed > VAD_NO_SPEECH_TIMEOUT:
+                logger.info("VAD: no speech within %.1fs, aborting", VAD_NO_SPEECH_TIMEOUT)
+                self._close_elevenlabs_ws()
+                self._unduck_spotify()
+                self.state = State.IDLE
+            return
+
+        # --- ACTIVE / TRAILING: user has spoken at least once ---
         if is_speech:
-            self._silence_start = None
-        else:
-            if self._silence_start is None:
-                self._silence_start = time.monotonic()
-            elif time.monotonic() - self._silence_start >= SILENCE_THRESHOLD_SECONDS:
-                logger.info("Silence detected after %.1fs of listening", elapsed)
-                self._transition_to_transcribing()
+            self._vad_speech_chunks += 1
+            self._vad_silence_start = None
+            return
+
+        # Non-speech frame while user was talking → start/continue trailing
+        if self._vad_silence_start is None:
+            self._vad_silence_start = time.monotonic()
+
+        silence_dur = time.monotonic() - self._vad_silence_start
+
+        # Only end if we've captured enough real speech to be meaningful
+        if (self._vad_speech_chunks >= VAD_MIN_SPEECH_CHUNKS
+                and silence_dur >= VAD_SILENCE_AFTER_SPEECH):
+            logger.info(
+                "VAD: end-of-speech at %.2fs (speech_chunks=%d, silence=%.2fs, last_prob=%.2f)",
+                elapsed, self._vad_speech_chunks, silence_dur, prob,
+            )
+            self._transition_to_transcribing()
 
     # ------------------------------------------------------------------
     # Transcribing -> Processing  (faster-whisper STT)
@@ -553,13 +629,24 @@ class Listener:
         "Hey Jarvis"
     )
 
+    _stt_http: "httpx.Client | None" = None
+    _stt_ssl_ctx = None
+
+    def _get_stt_http(self):
+        """Long-lived httpx client with cached SSL for ElevenLabs STT REST fallback."""
+        if self._stt_http is None or self._stt_http.is_closed:
+            import ssl
+            import certifi
+            import httpx
+            if self._stt_ssl_ctx is None:
+                Listener._stt_ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+            Listener._stt_http = httpx.Client(timeout=10, verify=self._stt_ssl_ctx)
+        return self._stt_http
+
     def _transcribe_elevenlabs(self, audio_float: np.ndarray) -> str | None:
         """Send audio to ElevenLabs Scribe API. Returns transcript or None."""
         import io
         import struct
-        import ssl
-        import certifi
-        import httpx
 
         pcm16 = (audio_float * 32767).astype(np.int16)
         buf = io.BytesIO()
@@ -575,18 +662,17 @@ class Listener:
         buf.seek(0)
 
         try:
-            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-            with httpx.Client(timeout=10, verify=ssl_ctx) as client:
-                resp = client.post(
-                    "https://api.elevenlabs.io/v1/speech-to-text",
-                    headers={"xi-api-key": self.settings.elevenlabs_api_key},
-                    files={"file": ("audio.wav", buf, "audio/wav")},
-                    data={
-                        "model_id": "scribe_v2",
-                        "language_code": "eng",
-                        "tag_audio_events": "false",
-                    },
-                )
+            client = self._get_stt_http()
+            resp = client.post(
+                "https://api.elevenlabs.io/v1/speech-to-text",
+                headers={"xi-api-key": self.settings.elevenlabs_api_key},
+                files={"file": ("audio.wav", buf, "audio/wav")},
+                data={
+                    "model_id": "scribe_v2",
+                    "language_code": "eng",
+                    "tag_audio_events": "false",
+                },
+            )
             if resp.status_code == 200:
                 text = resp.json().get("text", "").strip()
                 return text if text else None
@@ -596,9 +682,23 @@ class Listener:
             logger.warning("ElevenLabs STT error: %s", exc)
             return None
 
+    def _ensure_local_whisper(self):
+        """Lazily load a real faster-whisper model for local fallback."""
+        if hasattr(self, '_local_whisper') and self._local_whisper is not None:
+            return self._local_whisper
+        from faster_whisper import WhisperModel
+        self._local_whisper = WhisperModel(
+            self.settings.whisper_model,
+            device="cpu",
+            compute_type="int8",
+        )
+        logger.info("Whisper model loaded (local fallback): %s", self.settings.whisper_model)
+        return self._local_whisper
+
     def _transcribe_local(self, audio_float: np.ndarray) -> str | None:
         """Transcribe with local faster-whisper."""
-        segments, _ = self._whisper_model.transcribe(
+        model = self._ensure_local_whisper()
+        segments, _ = model.transcribe(
             audio_float,
             language="en",
             beam_size=1,
@@ -632,18 +732,23 @@ class Listener:
         if self._whisper_model == "elevenlabs" and getattr(self, '_el_connection', None):
             conn = self._el_connection
             el_loop = getattr(self, '_el_loop', None)
-            try:
-                if el_loop and el_loop.is_running():
-                    logger.info("[DEBUG] Sending commit via SDK")
-                    fut = asyncio.run_coroutine_threadsafe(conn.commit(), el_loop)
-                    fut.result(timeout=2)
-                for i in range(30):
-                    if self._el_final_text:
-                        logger.info("[DEBUG] Got committed text after %dms", i * 50)
-                        break
-                    time.sleep(0.05)
-            except Exception as exc:
-                logger.warning("[DEBUG] SDK commit failed: %s", exc)
+
+            # Fast path: if we already have committed text, skip the commit round-trip.
+            # If EL has nothing at all (no final, no partial), skip commit too --
+            # the audio was too short for the WS to process, REST will be faster.
+            if not self._el_final_text and self._current_transcript:
+                try:
+                    if el_loop and el_loop.is_running():
+                        logger.info("[DEBUG] Sending commit via SDK")
+                        fut = asyncio.run_coroutine_threadsafe(conn.commit(), el_loop)
+                        fut.result(timeout=2)
+                    for i in range(20):
+                        if self._el_final_text:
+                            logger.info("[DEBUG] Got committed text after %dms", i * 50)
+                            break
+                        time.sleep(0.05)
+                except Exception as exc:
+                    logger.warning("[DEBUG] SDK commit failed: %s", exc)
 
             text = self._el_final_text or self._current_transcript
             logger.info("[DEBUG] SDK text='%s' (final='%s', partial='%s')", text, self._el_final_text, self._current_transcript)
@@ -653,8 +758,12 @@ class Listener:
                 logger.info("[DEBUG] No SDK text, falling back to batch REST API")
                 text = self._transcribe_elevenlabs(audio)
         else:
-            logger.info("[DEBUG] Using local whisper fallback")
-            text = self._transcribe_local(audio)
+            if self._whisper_model == "elevenlabs":
+                logger.info("[DEBUG] ElevenLabs SDK not connected, trying REST API")
+                text = self._transcribe_elevenlabs(audio)
+            if not text:
+                logger.info("[DEBUG] Using local whisper fallback")
+                text = self._transcribe_local(audio)
 
         if not text or self._is_hallucination(text):
             logger.info("[DEBUG] Empty or hallucinated transcript ('%s'), returning to idle", text)
@@ -698,7 +807,10 @@ class Listener:
             self._play_response_audio(response.audio_url)
 
         logger.info("[DEBUG] === STATE -> IDLE ===")
-        self._unduck_spotify()
+        if response.action_code == "MUSIC_VOLUME":
+            logger.info("Skipping unduck — user changed volume intentionally")
+        else:
+            self._unduck_spotify()
         self._current_transcript = ""
         self._current_response = ""
         self.state = State.IDLE

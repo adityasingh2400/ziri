@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = "yj30vwTGJxSHezdAGsv9"
     elevenlabs_model_id: str = "eleven_turbo_v2_5"
     elevenlabs_output_format: str = "mp3_44100_192"
-    elevenlabs_streaming_latency: int = 3
+    elevenlabs_streaming_latency: int = 4
     elevenlabs_stability: float = 0.55
     elevenlabs_similarity_boost: float = 0.85
     elevenlabs_speed: float = 0.85
