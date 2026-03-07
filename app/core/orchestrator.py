@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from typing import Any, TypedDict
 
 try:
@@ -347,3 +348,164 @@ class ZiriOrchestrator:
         state.update(executed)  # type: ignore[arg-type]
         responded = self._respond_node(state)
         return responded["response"], state["route_decision"], state["tool_result"]
+
+    # ------------------------------------------------------------------
+    # Streaming entry point (LLM tokens → TTS → speaker in real-time)
+    # ------------------------------------------------------------------
+
+    def handle_intent_streaming(
+        self,
+        request: IntentRequest,
+        device_context: DeviceContext,
+    ) -> tuple[IntentResponse, RouterDecision, ToolResult, bool]:
+        """Like handle_intent, but streams the LLM → TTS path when possible.
+
+        Returns (response, decision, result, did_stream).
+        When did_stream is True, audio was already played during processing
+        and the caller should NOT play audio_url again.
+        """
+        trace = create_trace(
+            name="handle_intent_streaming",
+            user_id=request.user_id,
+            metadata={
+                "device_id": request.device_id,
+                "room": request.room,
+                "raw_text": request.raw_text,
+                "multi_agent": self.supervisor is not None,
+                "streaming": True,
+            },
+            tags=["orchestrator", "streaming"],
+            settings=self.settings,
+        )
+
+        init_state: ZiriState = {
+            "request": request,
+            "device_context": device_context,
+            "trace": trace,
+        }
+
+        if not self.supervisor:
+            resp, dec, res = self._manual_linear(init_state)
+            return resp, dec, res, False
+
+        # Run supervisor to route
+        sv_out = self._supervisor_node(init_state)
+        init_state.update(sv_out)  # type: ignore[arg-type]
+
+        domain = init_state.get("domain", "info")
+        sv = init_state.get("supervisor_result")
+
+        # Streaming only applies to info domain general-answer queries
+        if domain == "info" and self.info_agent and self._can_stream_info(sv):
+            return self._stream_info_path(init_state, trace)
+
+        # Non-streaming: dispatch to the normal agent path
+        if domain == "music":
+            agent_out = self._music_agent_node(init_state)
+        elif domain == "home":
+            agent_out = self._home_agent_node(init_state)
+        elif domain == "quick":
+            agent_out = self._quick_action_node(init_state)
+        else:
+            agent_out = self._info_agent_node(init_state)
+
+        init_state.update(agent_out)  # type: ignore[arg-type]
+        responded = self._respond_node(init_state)
+        return responded["response"], init_state["route_decision"], init_state["tool_result"], False
+
+    def _can_stream_info(self, sv: SupervisorResult | None) -> bool:
+        """Check if the info query is a general-answer type that benefits from streaming."""
+        if sv is None:
+            return True
+        if sv.deterministic_decision is not None:
+            tool = sv.deterministic_decision.tool_name
+            return tool == "general.answer"
+        return True
+
+    def _stream_info_path(
+        self,
+        state: ZiriState,
+        trace: Any,
+    ) -> tuple[IntentResponse, RouterDecision, ToolResult, bool]:
+        """Run the info agent think step; if it resolves to general.answer, stream the response."""
+        req = state["request"]
+        device_context = state["device_context"]
+        sv = state.get("supervisor_result")
+        query = sv.query if sv else req.raw_text
+
+        # Let the info agent decide which tool to use
+        decision = self.info_agent._think(query, [], trace)
+
+        if decision is None or decision.tool_name != "general.answer":
+            # Not a general-answer query — fall back to normal path
+            agent_out = self._info_agent_node(state)
+            state.update(agent_out)  # type: ignore[arg-type]
+            responded = self._respond_node(state)
+            return responded["response"], state["route_decision"], state["tool_result"], False
+
+        # Stream LLM → TTS
+        text_iter = self.info_agent.general_answer_streaming(
+            str(decision.tool_args.get("query") or query),
+            trace=trace,
+        )
+
+        spoken_text = self.tts.synthesize_streaming(text_iter, trace=trace)
+
+        decision_final = RouterDecision(
+            intent_type=IntentType.INFO_QUERY,
+            tool_name="general.answer",
+            tool_args={"query": query},
+            action_code="INFO_REPLY",
+            confidence=0.85,
+        )
+        result = ToolResult(
+            ok=True,
+            action_code="INFO_REPLY",
+            speak_text=spoken_text,
+            payload={"query": query, "streamed": True},
+        )
+
+        response = IntentResponse(
+            speak_text=spoken_text,
+            action_code="INFO_REPLY",
+            audio_url=None,
+            target_device=device_context.default_speaker,
+            metadata={
+                "intent_type": IntentType.INFO_QUERY.value,
+                "tool": "general.answer",
+                "tool_payload": result.payload,
+                "confidence": 0.85,
+                "resolved_room": device_context.room_name,
+                "speaker": device_context.default_speaker,
+                "domain": "info",
+                "streamed": True,
+            },
+        )
+
+        self.memory.remember_turn(
+            user_id=req.user_id,
+            raw_text=req.raw_text,
+            intent_type=IntentType.INFO_QUERY.value,
+            tool_name="general.answer",
+            assistant_speak=spoken_text,
+            private_note="",
+            context={
+                "tool_payload": result.payload,
+                "target_device": device_context.default_speaker,
+                "room": device_context.room_name,
+                "action_code": "INFO_REPLY",
+            },
+        )
+
+        if self.es_store:
+            from datetime import datetime, timezone as _tz
+            self.es_store.index_turn(
+                user_id=req.user_id,
+                raw_text=req.raw_text,
+                intent_type=IntentType.INFO_QUERY.value,
+                tool_name="general.answer",
+                assistant_speak=spoken_text,
+                created_at=datetime.now(_tz.utc).isoformat(),
+            )
+
+        return response, decision_final, result, True

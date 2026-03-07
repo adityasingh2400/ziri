@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import Any
 
@@ -214,3 +215,48 @@ class InfoAgent:
         except Exception as exc:
             logger.warning("InfoAgent general answer failed: %s", exc)
             return ToolResult(ok=True, action_code="INFO_REPLY", speak_text="I couldn't look that up right now.", error=str(exc))
+
+    def general_answer_streaming(self, query: str, trace: Any = None) -> Iterator[str]:
+        """Yield text tokens from Bedrock converse_stream for real-time TTS.
+
+        Falls back to yielding the full response as a single chunk if
+        streaming is unavailable.
+        """
+        if not self._bedrock:
+            yield "I'm not sure about that."
+            return
+
+        system_prompt = (
+            "You are Ziri, a concise voice assistant. Answer the user's question in 1-2 short sentences. "
+            "Be direct and accurate. Speak naturally as if talking to a friend. "
+            "Maximum 25 words. No filler."
+        )
+
+        try:
+            response = self._bedrock.converse_stream(
+                modelId=self._model_id,
+                system=[{"text": system_prompt}],
+                messages=[{"role": "user", "content": [{"text": query}]}],
+                inferenceConfig={"maxTokens": 80, "temperature": 0.5},
+            )
+
+            stream = response.get("stream")
+            if stream is None:
+                yield from self._general_answer_fallback(query, trace)
+                return
+
+            for event in stream:
+                delta = event.get("contentBlockDelta", {}).get("delta", {})
+                text = delta.get("text", "")
+                if text:
+                    yield text
+
+        except Exception as exc:
+            logger.warning("InfoAgent streaming answer failed, falling back: %s", exc)
+            yield from self._general_answer_fallback(query, trace)
+
+    def _general_answer_fallback(self, query: str, trace: Any = None) -> Iterator[str]:
+        """Non-streaming fallback: yield the full answer as one chunk."""
+        result = self._general_answer(query, trace=trace)
+        if result.speak_text:
+            yield result.speak_text

@@ -229,6 +229,45 @@ class ZiriHub:
             self.session_repository.finalize(session_id, response, fallback_route, fallback_result)
             return response
 
+    async def handle_intent_streaming(self, request: IntentRequest) -> tuple[IntentResponse, bool]:
+        """Like handle_intent, but uses the streaming LLM→TTS path when possible.
+
+        Returns (response, did_stream). When did_stream is True, audio was already
+        played to the speaker during processing and the caller should skip playback.
+        """
+        session_id = self.session_repository.log_request(request)
+        fallback_route = RouterDecision(
+            intent_type=IntentType.INFO_QUERY,
+            tool_name="general.answer",
+            action_code="ERROR",
+            speak_text="",
+            private_note="",
+            confidence=0.0,
+        )
+        fallback_result = ToolResult(ok=False, action_code="ERROR")
+
+        try:
+            device_context = self.device_registry.resolve_context(request.device_id, request.room)
+            device_context = self._apply_user_preferences(request, device_context)
+            response, route_decision, tool_result, did_stream = (
+                self.orchestrator.handle_intent_streaming(
+                    request=request,
+                    device_context=device_context,
+                )
+            )
+            self.session_repository.finalize(session_id, response, route_decision, tool_result)
+            return response, did_stream
+        except Exception as exc:
+            logger.exception("Streaming intent processing failed")
+            response = IntentResponse(
+                speak_text="I hit an internal error while processing that request.",
+                private_note=str(exc),
+                action_code="ERROR",
+                metadata={"exception": exc.__class__.__name__},
+            )
+            self.session_repository.finalize(session_id, response, fallback_route, fallback_result)
+            return response, False
+
     def status(self) -> StatusResponse:
         using_supabase = isinstance(self.session_repository, SupabaseSessionRepository)
         using_bedrock = self.brain._bedrock is not None

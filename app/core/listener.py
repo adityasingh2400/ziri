@@ -791,8 +791,9 @@ class Listener:
         logger.info("[DEBUG] Submitting to event loop...")
         future = asyncio.run_coroutine_threadsafe(self._async_handle(text), self._loop)
         try:
-            response = future.result(timeout=30)
-            logger.info("[DEBUG] Event loop returned response, action=%s", response.action_code if response else "None")
+            response, did_stream = future.result(timeout=30)
+            logger.info("[DEBUG] Event loop returned response, action=%s, streamed=%s",
+                        response.action_code if response else "None", did_stream)
         except Exception:
             logger.exception("Intent processing failed")
             self._unduck_spotify()
@@ -801,10 +802,12 @@ class Listener:
 
         from app.core.personality import QUICK_REPLY_ACTIONS
         silent = response.action_code in QUICK_REPLY_ACTIONS
-        if response.audio_url and not silent:
+        if response.audio_url and not silent and not did_stream:
             self.state = State.SPEAKING
             logger.info("[DEBUG] === STATE -> SPEAKING === response='%s'", self._current_response[:80])
             self._play_response_audio(response.audio_url)
+        elif did_stream:
+            logger.info("[DEBUG] Audio was streamed during processing, skipping file playback")
 
         logger.info("[DEBUG] === STATE -> IDLE ===")
         if response.action_code == "MUSIC_VOLUME":
@@ -844,14 +847,15 @@ class Listener:
 
         try:
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
+            response, did_stream = await loop.run_in_executor(
                 None, self._run_intent_sync, request,
             )
             latency_ms = int((time.monotonic() - t0) * 1000)
             logger.info(
-                "Response: action=%s speak=%s",
+                "Response: action=%s speak=%s streamed=%s",
                 response.action_code,
                 response.speak_text[:80] if response.speak_text else "",
+                did_stream,
             )
             silent = response.action_code in QUICK_REPLY_ACTIONS
             self.history.appendleft(InteractionRecord(
@@ -862,7 +866,7 @@ class Listener:
                 latency_ms=latency_ms,
             ))
             self._current_response = "" if silent else (response.speak_text or "")
-            return response
+            return response, did_stream
         except Exception as exc:
             self.history.appendleft(InteractionRecord(
                 timestamp=datetime.now(timezone.utc).isoformat(),
@@ -872,13 +876,9 @@ class Listener:
             raise
 
     def _run_intent_sync(self, request):
-        """Run hub.handle_intent in a fresh event loop inside a thread pool thread.
-
-        This keeps the main uvicorn event loop free to serve dashboard polls
-        while the (potentially slow) tool calls execute.
-        """
+        """Run hub.handle_intent_streaming in a fresh event loop inside a thread pool thread."""
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(self.hub.handle_intent(request))
+            return loop.run_until_complete(self.hub.handle_intent_streaming(request))
         finally:
             loop.close()
