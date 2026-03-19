@@ -1,7 +1,7 @@
-"""Lightweight FastAPI service for the LangGraph worker.
+"""Lightweight FastAPI service for the Ziri worker.
 
 The API container forwards intent-processing requests here over the
-internal Docker/Kubernetes network.  This keeps the heavy LangGraph
+internal Docker/Kubernetes network. This keeps the core Brain
 orchestration in its own container.
 """
 from __future__ import annotations

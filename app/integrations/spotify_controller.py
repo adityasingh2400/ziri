@@ -40,6 +40,30 @@ def _set_mac_volume(percent: int) -> None:
     )
 
 
+def _get_spotify_app_volume() -> int:
+    """Return current Spotify app volume (0-100)."""
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", 'tell application "Spotify" to get sound volume'],
+            capture_output=True, text=True, timeout=3,
+        )
+        return int(result.stdout.strip())
+    except Exception:
+        return 100
+
+
+def _set_spotify_app_volume(percent: int) -> None:
+    """Set Spotify app volume (0-100)."""
+    try:
+        percent = max(0, min(100, int(percent)))
+        subprocess.run(
+            ["osascript", "-e", f'tell application "Spotify" to set sound volume to {percent}'],
+            capture_output=True, text=True, timeout=3,
+        )
+    except Exception:
+        pass
+
+
 class SpotifyController:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -620,9 +644,9 @@ class SpotifyController:
     _pre_duck_volume: int | None = None
 
     def duck(self, duck_percent: int = 25) -> dict[str, Any]:
-        """Lower macOS system volume for voice interaction."""
+        """Lower Spotify app volume for voice interaction."""
         try:
-            current_vol = _get_mac_volume()
+            current_vol = _get_spotify_app_volume()
 
             if current_vol <= duck_percent:
                 self._pre_duck_volume = current_vol
@@ -630,15 +654,15 @@ class SpotifyController:
 
             self._pre_duck_volume = current_vol
             target_vol = max(0, min(100, duck_percent))
-            _set_mac_volume(target_vol)
-            logger.info("Ducked Mac volume %d → %d", current_vol, target_vol)
+            _set_spotify_app_volume(target_vol)
+            logger.info("Ducked Spotify volume %d → %d", current_vol, target_vol)
             return {"ok": True, "previous_volume": current_vol, "ducked_to": target_vol}
         except Exception as exc:
-            logger.exception("Mac duck failed")
+            logger.exception("Spotify duck failed")
             return {"ok": False, "error": str(exc)}
 
     def unduck(self) -> dict[str, Any]:
-        """Gradually restore macOS system volume to the pre-duck level."""
+        """Gradually restore Spotify app volume to the pre-duck level."""
         import time as _time
 
         restore_vol = self._pre_duck_volume
@@ -646,7 +670,7 @@ class SpotifyController:
             return {"ok": False, "error": "not_ducked"}
 
         try:
-            current_vol = _get_mac_volume()
+            current_vol = _get_spotify_app_volume()
 
             steps = 4
             diff = restore_vol - current_vol
@@ -656,15 +680,15 @@ class SpotifyController:
 
             for i in range(1, steps + 1):
                 step_vol = current_vol + int(diff * (i / steps))
-                _set_mac_volume(min(step_vol, 100))
+                _set_spotify_app_volume(min(step_vol, 100))
                 if i < steps:
                     _time.sleep(0.3)
 
-            logger.info("Unducked Mac volume %d → %d (ramped)", current_vol, restore_vol)
+            logger.info("Unducked Spotify volume %d → %d (ramped)", current_vol, restore_vol)
             self._pre_duck_volume = None
             return {"ok": True, "restored_volume": restore_vol}
         except Exception as exc:
-            logger.exception("Mac unduck failed")
+            logger.exception("Spotify unduck failed")
             return {"ok": False, "error": str(exc)}
 
     def add_to_queue(

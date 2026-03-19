@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     listener_room: str = "Office"
     listener_user_id: str = "Aditya"
     listener_chime_enabled: bool = True
+    
+    # Speaker filtering: only transcribe the person who said the wake word
+    speaker_filter_enabled: bool = True
+    speaker_filter_pre_wakeword_secs: float = 1.5  # seconds of audio before wake word to capture
 
     # Siri Shortcuts
     siri_user_id: str = "Aditya"

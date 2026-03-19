@@ -95,8 +95,8 @@ class Gesture(enum.Enum):
 _GESTURE_TO_DECISION: dict[Gesture, tuple[str, dict[str, Any], str]] = {
     Gesture.PAUSE: ("spotify.pause", {}, "MUSIC_PAUSE"),
     Gesture.RESUME: ("spotify.resume", {}, "MUSIC_RESUME"),
-    Gesture.VOLUME_UP: ("spotify.adjust_volume", {"delta_percent": 10}, "MUSIC_VOLUME"),
-    Gesture.VOLUME_DOWN: ("spotify.adjust_volume", {"delta_percent": -10}, "MUSIC_VOLUME"),
+    Gesture.VOLUME_UP: ("spotify.adjust_volume", {"delta_percent": 20}, "MUSIC_VOLUME"),
+    Gesture.VOLUME_DOWN: ("spotify.adjust_volume", {"delta_percent": -20}, "MUSIC_VOLUME"),
     Gesture.NEXT_TRACK: ("spotify.skip", {}, "MUSIC_SKIP"),
     Gesture.PREV_TRACK: ("spotify.previous", {}, "MUSIC_PREVIOUS"),
 }

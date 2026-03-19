@@ -17,7 +17,7 @@ try:
 
     INTENT_ROUTING_DURATION = Histogram(
         "ziri_intent_routing_seconds",
-        "Time spent in the supervisor / intent routing stage",
+        "Time spent in the brain / LLM intent routing stage",
         buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
     )
 

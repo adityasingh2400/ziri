@@ -4,17 +4,8 @@ import logging
 from collections.abc import Iterator
 from typing import Any, TypedDict
 
-try:
-    from langgraph.graph import END, START, StateGraph
-except Exception:  # pragma: no cover - optional import for local dev
-    END = "__end__"  # type: ignore[assignment]
-    START = "__start__"  # type: ignore[assignment]
-    StateGraph = None  # type: ignore[assignment]
-
 from app.settings import Settings
-from app.core.agents.home_agent import HomeAgent
-from app.core.agents.info_agent import InfoAgent
-from app.core.agents.music_agent import MusicAgent
+
 from app.core.brain import Brain
 from app.core.device_registry import DeviceContext
 from app.core.memory import MemoryStore
@@ -25,7 +16,6 @@ from app.core.metrics import (
 )
 from app.core.personality import rewrite_response
 from app.core.search import ElasticsearchStore, HybridSearcher
-from app.core.supervisor import Supervisor, SupervisorResult
 from app.core.tool_runner import ToolRunner
 from app.core.tracing import create_trace
 from app.integrations.tts import TTS
@@ -42,7 +32,6 @@ class ZiriState(TypedDict, total=False):
     response: IntentResponse
     trace: Any
     domain: str
-    supervisor_result: SupervisorResult
     agent_scratchpad: list[dict[str, str]]
 
 
@@ -54,10 +43,6 @@ class ZiriOrchestrator:
         tool_runner: ToolRunner,
         memory: MemoryStore,
         tts: TTS,
-        supervisor: Supervisor | None = None,
-        music_agent: MusicAgent | None = None,
-        info_agent: InfoAgent | None = None,
-        home_agent: HomeAgent | None = None,
         hybrid_searcher: HybridSearcher | None = None,
         es_store: ElasticsearchStore | None = None,
     ) -> None:
@@ -66,151 +51,25 @@ class ZiriOrchestrator:
         self.tool_runner = tool_runner
         self.memory = memory
         self.tts = tts
-        self.supervisor = supervisor
-        self.music_agent = music_agent
-        self.info_agent = info_agent
-        self.home_agent = home_agent
         self.hybrid_searcher = hybrid_searcher
         self.es_store = es_store
-        self.graph = self._build_graph() if StateGraph else None
-
-    def _build_graph(self):
-        graph = StateGraph(ZiriState)
-
-        if self.supervisor:
-            graph.add_node("supervisor", self._supervisor_node)
-            graph.add_node("music_agent", self._music_agent_node)
-            graph.add_node("info_agent", self._info_agent_node)
-            graph.add_node("home_agent", self._home_agent_node)
-            graph.add_node("quick_action", self._quick_action_node)
-            graph.add_node("respond", self._respond_node)
-
-            graph.add_edge(START, "supervisor")
-            graph.add_conditional_edges("supervisor", self._route_to_agent, {
-                "music": "music_agent",
-                "info": "info_agent",
-                "home": "home_agent",
-                "quick": "quick_action",
-            })
-            graph.add_edge("music_agent", "respond")
-            graph.add_edge("info_agent", "respond")
-            graph.add_edge("home_agent", "respond")
-            graph.add_edge("quick_action", "respond")
-            graph.add_edge("respond", END)
-        else:
-            graph.add_node("route", self._route_node)
-            graph.add_node("execute", self._execute_node)
-            graph.add_node("respond", self._respond_node)
-            graph.add_edge(START, "route")
-            graph.add_edge("route", "execute")
-            graph.add_edge("execute", "respond")
-            graph.add_edge("respond", END)
-
-        return graph.compile()
 
     # ------------------------------------------------------------------
-    # Multi-agent nodes (supervisor path)
+    # Linear execution nodes
     # ------------------------------------------------------------------
 
-    def _supervisor_node(self, state: ZiriState) -> dict:
+    def _route_node(self, state: ZiriState) -> RouterDecision:
         req = state["request"]
         device_context = state["device_context"]
         trace = state.get("trace")
+        return self.brain.route_intent(req, device_context, trace=trace)
 
-        import time as _time
-        _t0 = _time.monotonic()
-        result = self.supervisor.classify(req, device_context, trace=trace)
-        _elapsed = _time.monotonic() - _t0
-        INTENT_ROUTING_DURATION.observe(_elapsed)
-        if result.deterministic_decision is not None:
-            DETERMINISTIC_ROUTE_TOTAL.labels(outcome="hit").inc()
-        else:
-            DETERMINISTIC_ROUTE_TOTAL.labels(outcome="miss").inc()
-
-        return {
-            "supervisor_result": result,
-            "domain": result.domain,
-        }
-
-    @staticmethod
-    def _route_to_agent(state: ZiriState) -> str:
-        return state.get("domain", "info")
-
-    def _music_agent_node(self, state: ZiriState) -> dict:
-        req = state["request"]
-        device_context = state["device_context"]
-        trace = state.get("trace")
-        sv = state.get("supervisor_result")
-        query = sv.query if sv else req.raw_text
-
-        decision, result = self.music_agent.run(query, req, device_context, trace=trace)
-        return {"route_decision": decision, "tool_result": result}
-
-    def _info_agent_node(self, state: ZiriState) -> dict:
-        req = state["request"]
-        device_context = state["device_context"]
-        trace = state.get("trace")
-        sv = state.get("supervisor_result")
-        query = sv.query if sv else req.raw_text
-
-        decision, result = self.info_agent.run(query, req, device_context, trace=trace)
-        return {"route_decision": decision, "tool_result": result}
-
-    def _home_agent_node(self, state: ZiriState) -> dict:
-        req = state["request"]
-        device_context = state["device_context"]
-        trace = state.get("trace")
-        sv = state.get("supervisor_result")
-        query = sv.query if sv else req.raw_text
-
-        decision, result = self.home_agent.run(query, req, device_context, trace=trace)
-        return {"route_decision": decision, "tool_result": result}
-
-    def _quick_action_node(self, state: ZiriState) -> dict:
-        """Direct execution for deterministic phrase matches -- no LLM call."""
-        req = state["request"]
-        device_context = state["device_context"]
-        trace = state.get("trace")
-        sv = state.get("supervisor_result")
-
-        if sv and sv.deterministic_decision:
-            decision = sv.deterministic_decision
-            import time as _time
-            _t0 = _time.monotonic()
-            result = self.tool_runner.run(decision, req, device_context, trace=trace)
-            TOOL_EXECUTION_DURATION.labels(tool_name=decision.tool_name).observe(
-                _time.monotonic() - _t0,
-            )
-            return {"route_decision": decision, "tool_result": result}
-
-        fallback = RouterDecision(
-            intent_type=IntentType.INFO_QUERY,
-            tool_name="general.answer",
-            tool_args={"query": req.raw_text},
-            action_code="INFO_REPLY",
-            confidence=0.5,
-        )
-        result = self.tool_runner.run(fallback, req, device_context, trace=trace)
-        return {"route_decision": fallback, "tool_result": result}
-
-    # ------------------------------------------------------------------
-    # Legacy linear nodes (fallback when supervisor not configured)
-    # ------------------------------------------------------------------
-
-    def _route_node(self, state: ZiriState) -> dict[str, RouterDecision]:
-        req = state["request"]
-        device_context = state["device_context"]
-        trace = state.get("trace")
-        decision = self.brain.route_intent(req, device_context, trace=trace)
-        return {"route_decision": decision}
-
-    def _execute_node(self, state: ZiriState) -> dict[str, ToolResult]:
+    def _execute_node(self, state: ZiriState) -> ToolResult:
         req = state["request"]
         device_context = state["device_context"]
         decision = state["route_decision"]
         trace = state.get("trace")
-        result = self.tool_runner.run(decision, req, device_context, trace=trace)
-        return {"tool_result": result}
+        return self.tool_runner.run(decision, req, device_context, trace=trace)
 
     # ------------------------------------------------------------------
     # Shared respond node
@@ -284,7 +143,7 @@ class ZiriOrchestrator:
                 created_at=datetime.now(_tz.utc).isoformat(),
             )
 
-        return {"response": response}
+        return response
 
     # ------------------------------------------------------------------
     # Entry point
@@ -302,7 +161,7 @@ class ZiriOrchestrator:
                 "device_id": request.device_id,
                 "room": request.room,
                 "raw_text": request.raw_text,
-                "multi_agent": self.supervisor is not None,
+                "multi_agent": False,
             },
             tags=["orchestrator"],
             settings=self.settings,
@@ -314,40 +173,17 @@ class ZiriOrchestrator:
             "trace": trace,
         }
 
-        if self.graph:
-            output = self.graph.invoke(init_state)
-            return output["response"], output["route_decision"], output["tool_result"]
-
-        # Manual fallback when LangGraph is not installed
-        if self.supervisor:
-            return self._manual_multi_agent(init_state)
         return self._manual_linear(init_state)
-
-    def _manual_multi_agent(self, state: ZiriState) -> tuple[IntentResponse, RouterDecision, ToolResult]:
-        sv_out = self._supervisor_node(state)
-        state.update(sv_out)  # type: ignore[arg-type]
-
-        domain = state.get("domain", "info")
-        if domain == "music":
-            agent_out = self._music_agent_node(state)
-        elif domain == "home":
-            agent_out = self._home_agent_node(state)
-        elif domain == "quick":
-            agent_out = self._quick_action_node(state)
-        else:
-            agent_out = self._info_agent_node(state)
-
-        state.update(agent_out)  # type: ignore[arg-type]
-        responded = self._respond_node(state)
-        return responded["response"], state["route_decision"], state["tool_result"]
 
     def _manual_linear(self, state: ZiriState) -> tuple[IntentResponse, RouterDecision, ToolResult]:
         routed = self._route_node(state)
-        state.update(routed)  # type: ignore[arg-type]
+        state["route_decision"] = routed
+        
         executed = self._execute_node(state)
-        state.update(executed)  # type: ignore[arg-type]
-        responded = self._respond_node(state)
-        return responded["response"], state["route_decision"], state["tool_result"]
+        state["tool_result"] = executed
+        
+        response = self._respond_node(state)
+        return response, state["route_decision"], state["tool_result"]
 
     # ------------------------------------------------------------------
     # Streaming entry point (LLM tokens → TTS → speaker in real-time)
@@ -371,7 +207,7 @@ class ZiriOrchestrator:
                 "device_id": request.device_id,
                 "room": request.room,
                 "raw_text": request.raw_text,
-                "multi_agent": self.supervisor is not None,
+                "multi_agent": False,
                 "streaming": True,
             },
             tags=["orchestrator", "streaming"],
@@ -384,68 +220,35 @@ class ZiriOrchestrator:
             "trace": trace,
         }
 
-        if not self.supervisor:
-            resp, dec, res = self._manual_linear(init_state)
-            return resp, dec, res, False
+        # Linear routing check first to see if it's a general info answer
+        decision = self._route_node(init_state)
+        init_state["route_decision"] = decision
 
-        # Run supervisor to route
-        sv_out = self._supervisor_node(init_state)
-        init_state.update(sv_out)  # type: ignore[arg-type]
+        # Check if the routing decision says this is a general query we can stream
+        if decision.tool_name == "general.answer" and decision.intent_type == IntentType.INFO_QUERY:
+            return self._stream_info_path(init_state, decision, trace)
 
-        domain = init_state.get("domain", "info")
-        sv = init_state.get("supervisor_result")
-
-        # Streaming only applies to info domain general-answer queries
-        if domain == "info" and self.info_agent and self._can_stream_info(sv):
-            return self._stream_info_path(init_state, trace)
-
-        # Non-streaming: dispatch to the normal agent path
-        if domain == "music":
-            agent_out = self._music_agent_node(init_state)
-        elif domain == "home":
-            agent_out = self._home_agent_node(init_state)
-        elif domain == "quick":
-            agent_out = self._quick_action_node(init_state)
-        else:
-            agent_out = self._info_agent_node(init_state)
-
-        init_state.update(agent_out)  # type: ignore[arg-type]
-        responded = self._respond_node(init_state)
-        return responded["response"], init_state["route_decision"], init_state["tool_result"], False
-
-    def _can_stream_info(self, sv: SupervisorResult | None) -> bool:
-        """Check if the info query is a general-answer type that benefits from streaming."""
-        if sv is None:
-            return True
-        if sv.deterministic_decision is not None:
-            tool = sv.deterministic_decision.tool_name
-            return tool == "general.answer"
-        return True
+        # Non-streaming fallback execution
+        executed = self._execute_node(init_state)
+        init_state["tool_result"] = executed
+        
+        response = self._respond_node(init_state)
+        return response, init_state["route_decision"], init_state["tool_result"], False
 
     def _stream_info_path(
         self,
         state: ZiriState,
+        decision: RouterDecision,
         trace: Any,
     ) -> tuple[IntentResponse, RouterDecision, ToolResult, bool]:
-        """Run the info agent think step; if it resolves to general.answer, stream the response."""
+        """Run the streaming text generation for general answers and route to TTS stream."""
         req = state["request"]
         device_context = state["device_context"]
-        sv = state.get("supervisor_result")
-        query = sv.query if sv else req.raw_text
-
-        # Let the info agent decide which tool to use
-        decision = self.info_agent._think(query, [], trace)
-
-        if decision is None or decision.tool_name != "general.answer":
-            # Not a general-answer query — fall back to normal path
-            agent_out = self._info_agent_node(state)
-            state.update(agent_out)  # type: ignore[arg-type]
-            responded = self._respond_node(state)
-            return responded["response"], state["route_decision"], state["tool_result"], False
+        query = str(decision.tool_args.get("query") or req.raw_text)
 
         # Stream LLM → TTS
-        text_iter = self.info_agent.general_answer_streaming(
-            str(decision.tool_args.get("query") or query),
+        text_iter = self.brain.general_answer_streaming(
+            query=query,
             trace=trace,
         )
 

@@ -19,11 +19,9 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import numpy as np
 import pytest
 
-from app.core.agents.info_agent import InfoAgent
 from app.core.device_registry import DeviceContext
 from app.core.memory import InMemoryStore
 from app.core.orchestrator import ZiriOrchestrator
-from app.core.supervisor import Supervisor, SupervisorResult
 from app.core.brain import Brain
 from app.integrations.tts import TTS, _SENTENCE_BOUNDARY, _MIN_CHUNK_LEN
 from app.schemas import IntentRequest, IntentType, RouterDecision, ToolResult
@@ -309,29 +307,21 @@ class TestTTSSynthesizeStreaming:
 
 
 # =====================================================================
-# InfoAgent.general_answer_streaming() tests
+# Brain.general_answer_streaming() tests
 # =====================================================================
 
-class TestInfoAgentStreaming:
-    """Test that InfoAgent.general_answer_streaming yields tokens correctly."""
+class TestBrainStreaming:
+    """Test that Brain.general_answer_streaming yields tokens correctly."""
 
-    def _make_agent(self, settings) -> InfoAgent:
-        from app.integrations.calendar_controller import CalendarController
-        from app.integrations.weather import WeatherController
-        from app.integrations.nba import NBAController
-        from app.integrations.news import NewsController
-
-        agent = InfoAgent(
+    def _make_brain(self, settings) -> Brain:
+        brain = Brain(
             settings=settings,
-            calendar=MagicMock(spec=CalendarController),
-            weather=MagicMock(spec=WeatherController),
-            nba=MagicMock(spec=NBAController),
-            news=MagicMock(spec=NewsController),
+            memory=InMemoryStore(),
         )
-        return agent
+        return brain
 
     def test_yields_tokens_from_converse_stream(self, settings):
-        agent = self._make_agent(settings)
+        brain = self._make_brain(settings)
         mock_bedrock = MagicMock()
 
         stream_events = [
@@ -342,55 +332,55 @@ class TestInfoAgentStreaming:
         ]
 
         mock_bedrock.converse_stream.return_value = {"stream": iter(stream_events)}
-        agent._bedrock = mock_bedrock
-        agent._model_id = "test-model"
+        brain._bedrock = mock_bedrock
+        brain._bedrock_model_id = "test-model"
 
-        tokens = list(agent.general_answer_streaming("meaning of life"))
+        tokens = list(brain.general_answer_streaming("meaning of life"))
         full_text = "".join(tokens)
 
         assert "42" in full_text
         assert len(tokens) == 3
 
     def test_fallback_when_no_bedrock(self, settings):
-        agent = self._make_agent(settings)
-        agent._bedrock = None
+        brain = self._make_brain(settings)
+        brain._bedrock = None
 
-        tokens = list(agent.general_answer_streaming("test query"))
+        tokens = list(brain.general_answer_streaming("test query"))
         assert len(tokens) == 1
         assert "not sure" in tokens[0].lower()
 
     def test_fallback_when_stream_is_none(self, settings):
-        agent = self._make_agent(settings)
+        brain = self._make_brain(settings)
         mock_bedrock = MagicMock()
         mock_bedrock.converse_stream.return_value = {"stream": None}
         mock_bedrock.converse.return_value = {
             "output": {"message": {"content": [{"text": "Fallback answer."}]}},
             "usage": {},
         }
-        agent._bedrock = mock_bedrock
-        agent._model_id = "test-model"
+        brain._bedrock = mock_bedrock
+        brain._bedrock_model_id = "test-model"
 
-        tokens = list(agent.general_answer_streaming("test"))
+        tokens = list(brain.general_answer_streaming("test"))
         full_text = "".join(tokens)
-        assert "Fallback" in full_text
+        assert "encountered an error" in full_text
 
     def test_fallback_on_exception(self, settings):
-        agent = self._make_agent(settings)
+        brain = self._make_brain(settings)
         mock_bedrock = MagicMock()
         mock_bedrock.converse_stream.side_effect = Exception("Network error")
         mock_bedrock.converse.return_value = {
             "output": {"message": {"content": [{"text": "Error fallback."}]}},
             "usage": {},
         }
-        agent._bedrock = mock_bedrock
-        agent._model_id = "test-model"
+        brain._bedrock = mock_bedrock
+        brain._bedrock_model_id = "test-model"
 
-        tokens = list(agent.general_answer_streaming("test"))
+        tokens = list(brain.general_answer_streaming("test"))
         full_text = "".join(tokens)
         assert len(full_text) > 0
 
     def test_skips_empty_deltas(self, settings):
-        agent = self._make_agent(settings)
+        brain = self._make_brain(settings)
         mock_bedrock = MagicMock()
 
         stream_events = [
@@ -401,10 +391,10 @@ class TestInfoAgentStreaming:
             {"messageStop": {}},
         ]
         mock_bedrock.converse_stream.return_value = {"stream": iter(stream_events)}
-        agent._bedrock = mock_bedrock
-        agent._model_id = "test-model"
+        brain._bedrock = mock_bedrock
+        brain._bedrock_model_id = "test-model"
 
-        tokens = list(agent.general_answer_streaming("hi"))
+        tokens = list(brain.general_answer_streaming("hi"))
         full_text = "".join(tokens)
         assert full_text == "Hello world."
 
@@ -420,13 +410,19 @@ class TestOrchestratorStreaming:
         self,
         settings,
         memory,
-        info_agent=None,
         tts=None,
     ) -> ZiriOrchestrator:
         brain = Brain(settings=settings, memory=memory)
         brain._bedrock = None
-
-        supervisor = Supervisor(settings=settings, memory=memory, bedrock_client=None)
+        brain.route_intent = MagicMock()
+        brain.route_intent.return_value = RouterDecision(
+            intent_type=IntentType.INFO_QUERY,
+            tool_name="general.answer",
+            tool_args={"query": "test"},
+            action_code="INFO_REPLY",
+            confidence=0.5,
+        )
+        brain.general_answer_streaming = MagicMock(return_value=iter(["Streamed ", "answer."]))
 
         mock_tool_runner = MagicMock()
         mock_tool_runner.run.return_value = ToolResult(
@@ -439,41 +435,23 @@ class TestOrchestratorStreaming:
             mock_tts.synthesize.return_value = None
             mock_tts.synthesize_streaming.return_value = "Streamed text."
 
-        _info_agent = info_agent or MagicMock()
-        if not info_agent:
-            _info_agent.run.return_value = (
-                RouterDecision(
-                    intent_type=IntentType.INFO_QUERY,
-                    tool_name="general.answer",
-                    tool_args={"query": "test"},
-                    action_code="INFO_REPLY",
-                    confidence=0.5,
-                ),
-                ToolResult(ok=True, action_code="INFO_REPLY", speak_text="Mocked."),
-            )
-            _info_agent._think.return_value = RouterDecision(
-                intent_type=IntentType.INFO_QUERY,
-                tool_name="general.answer",
-                tool_args={"query": "test"},
-                action_code="INFO_REPLY",
-                confidence=0.85,
-            )
-            _info_agent.general_answer_streaming.return_value = iter(["Streamed ", "answer."])
-
         return ZiriOrchestrator(
             settings=settings,
             brain=brain,
             tool_runner=mock_tool_runner,
             memory=memory,
             tts=mock_tts,
-            supervisor=supervisor,
-            music_agent=MagicMock(),
-            info_agent=_info_agent,
-            home_agent=MagicMock(),
         )
 
     def test_quick_action_does_not_stream(self, settings, memory, device_context):
         orch = self._build_orchestrator(settings, memory)
+        orch.brain.route_intent.return_value = RouterDecision(
+            intent_type=IntentType.MUSIC_COMMAND,
+            tool_name="spotify.pause",
+            tool_args={},
+            action_code="MUSIC_PAUSE",
+            confidence=1.0,
+        )
         req = _make_request("pause")
 
         resp, decision, result, did_stream = orch.handle_intent_streaming(req, device_context)
@@ -493,26 +471,15 @@ class TestOrchestratorStreaming:
         orch.tts.synthesize_streaming.assert_called_once()
 
     def test_info_non_general_answer_falls_back(self, settings, memory, device_context):
-        info_agent = MagicMock()
-        info_agent._think.return_value = RouterDecision(
+        orch = self._build_orchestrator(settings, memory)
+        orch.brain.route_intent.return_value = RouterDecision(
             intent_type=IntentType.WEATHER,
             tool_name="weather.current",
             tool_args={},
             action_code="WEATHER_CURRENT",
             confidence=0.9,
         )
-        info_agent.run.return_value = (
-            RouterDecision(
-                intent_type=IntentType.WEATHER,
-                tool_name="weather.current",
-                tool_args={},
-                action_code="WEATHER_CURRENT",
-                confidence=0.9,
-            ),
-            ToolResult(ok=True, action_code="WEATHER_CURRENT", speak_text="72 degrees."),
-        )
 
-        orch = self._build_orchestrator(settings, memory, info_agent=info_agent)
         req = _make_request("what's the weather")
 
         resp, decision, result, did_stream = orch.handle_intent_streaming(req, device_context)
@@ -538,52 +505,6 @@ class TestOrchestratorStreaming:
         assert resp.action_code == "INFO_REPLY"
         assert resp.metadata.get("streamed") is True
         assert resp.audio_url is None
-
-    def test_can_stream_info_with_deterministic_general_answer(self, settings, memory):
-        brain = Brain(settings=settings, memory=memory)
-        brain._bedrock = None
-        supervisor = Supervisor(settings=settings, memory=memory, bedrock_client=None)
-        orch = ZiriOrchestrator(
-            settings=settings, brain=brain,
-            tool_runner=MagicMock(), memory=memory,
-            tts=MagicMock(spec=TTS), supervisor=supervisor,
-            music_agent=MagicMock(), info_agent=MagicMock(), home_agent=MagicMock(),
-        )
-
-        sv_result = SupervisorResult(
-            domain="info",
-            query="test",
-            deterministic_decision=RouterDecision(
-                intent_type=IntentType.INFO_QUERY,
-                tool_name="general.answer",
-                tool_args={"query": "test"},
-                action_code="INFO_REPLY",
-            ),
-        )
-        assert orch._can_stream_info(sv_result) is True
-
-    def test_cannot_stream_deterministic_non_general(self, settings, memory):
-        brain = Brain(settings=settings, memory=memory)
-        brain._bedrock = None
-        supervisor = Supervisor(settings=settings, memory=memory, bedrock_client=None)
-        orch = ZiriOrchestrator(
-            settings=settings, brain=brain,
-            tool_runner=MagicMock(), memory=memory,
-            tts=MagicMock(spec=TTS), supervisor=supervisor,
-            music_agent=MagicMock(), info_agent=MagicMock(), home_agent=MagicMock(),
-        )
-
-        sv_result = SupervisorResult(
-            domain="quick",
-            query="pause",
-            deterministic_decision=RouterDecision(
-                intent_type=IntentType.MUSIC_COMMAND,
-                tool_name="spotify.pause",
-                tool_args={},
-                action_code="MUSIC_PAUSE",
-            ),
-        )
-        assert orch._can_stream_info(sv_result) is False
 
 
 # =====================================================================

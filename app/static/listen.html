@@ -1,1137 +1,1821 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Ziri</title>
-<style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{--d1:80,60,120;--d2:40,30,80;--text:#f0f0f4;--muted:rgba(255,255,255,.45)}
-html,body{height:100%;overflow-x:hidden}
-body{
-  font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,sans-serif;
-  color:var(--text);
-  display:flex;flex-direction:column;align-items:center;
-  justify-content:center;
-  min-height:100vh;
-  padding:20px;
-  background:rgb(var(--d2));
-  transition:background 3s ease;
-  position:relative;
-}
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ziri</title>
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0
+    }
 
-/* Full-page fluid background */
-#fluid-bg{position:fixed!important;inset:0!important;z-index:0!important;width:100vw!important;height:100vh!important;overflow:hidden!important}
-#fluid-bg canvas{width:100%!important;height:100%!important;position:absolute!important;inset:0!important}
+    :root {
+      --d1: 80, 60, 120;
+      --d2: 40, 30, 80;
+      --text: #f0f0f4;
+      --muted: rgba(255, 255, 255, .45)
+    }
 
-body>*:not(#fluid-bg):not(.history-btn):not(.hist-backdrop):not(.history-modal){position:relative;z-index:1}
-.history-btn,.hist-backdrop,.history-modal{z-index:10}
+    html,
+    body {
+      height: 100%;
+      overflow-x: hidden
+    }
 
-/* ---- Album art ---- */
-.art-wrap{
-  width:280px;height:280px;border-radius:22px;overflow:hidden;
-  position:relative;margin-bottom:28px;
-  transition:box-shadow 3s ease;
-}
-.art-wrap img{
-  position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
-  transition:opacity 1.6s ease,transform 1.6s ease;
-}
-.art-wrap img.old{opacity:0;transform:scale(1.06)}
-.art-wrap img.current{opacity:1;transform:scale(1)}
-.art-placeholder{
-  width:100%;height:100%;display:flex;align-items:center;justify-content:center;
-  background:rgba(255,255,255,.05);color:var(--muted);font-size:.85rem;
-}
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+      background: rgb(var(--d2));
+      transition: background 3s ease;
+      position: relative;
+    }
 
-/* ---- Track info ---- */
-.track-title{
-  font-size:1.35rem;font-weight:700;letter-spacing:-.03em;
-  text-align:center;max-width:400px;margin-bottom:6px;
-  transition:opacity .8s ease,transform .8s ease;
-}
-.track-artist{font-size:.95rem;color:var(--muted);text-align:center;margin-bottom:3px;transition:opacity .8s ease,transform .8s ease}
-.track-album{font-size:.76rem;color:var(--muted);opacity:.5;text-align:center;transition:opacity .8s ease}
-.track-title.out,.track-artist.out{opacity:0;transform:translateY(8px)}
+    /* Full-page fluid background */
+    #fluid-bg {
+      position: fixed !important;
+      inset: 0 !important;
+      z-index: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      overflow: hidden !important
+    }
 
-/* ---- Progress ---- */
-.progress-wrap{width:280px;display:flex;align-items:center;gap:10px;margin-top:18px;margin-bottom:14px}
-.progress-bar{flex:1;height:3px;background:rgba(255,255,255,.1);border-radius:2px;overflow:hidden}
-.progress-fill{
-  height:100%;border-radius:2px;width:0;
-  background:rgba(255,255,255,.55);
-  transition:width .4s linear;
-}
-.progress-time{font-size:.65rem;color:var(--muted);min-width:30px;text-align:center;font-variant-numeric:tabular-nums}
+    #fluid-bg canvas {
+      width: 100% !important;
+      height: 100% !important;
+      position: absolute !important;
+      inset: 0 !important
+    }
 
-/* ---- Playback controls ---- */
-.playback-controls{display:flex;align-items:center;justify-content:center;gap:24px;margin-bottom:16px}
-.playback-controls button{
-  background:none;border:none;cursor:pointer;padding:6px;
-  display:flex;align-items:center;justify-content:center;
-  color:rgba(255,255,255,.5);transition:color .2s,transform .15s;
-}
-.playback-controls button:hover{color:rgba(255,255,255,.85)}
-.playback-controls button:active{transform:scale(.9)}
-.playback-controls button svg{width:20px;height:20px;fill:currentColor}
-.playback-controls .play-pause svg{width:28px;height:28px}
+    body>*:not(#fluid-bg):not(.history-btn):not(.hist-backdrop):not(.history-modal) {
+      position: relative;
+      z-index: 1
+    }
 
-/* ---- Live voice overlay (under controls, in page flow) ---- */
-.voice-overlay{
-  width:90%;max-width:520px;
-  z-index:3;
-  display:flex;flex-direction:column;align-items:center;gap:8px;
-  pointer-events:none;min-height:80px;
-  opacity:0;
-  transition:opacity .5s ease;
-}
-.voice-overlay.active{opacity:1}
-.voice-overlay.fading{opacity:0;transition:opacity 1.2s ease}
+    .history-btn,
+    .hist-backdrop,
+    .history-modal {
+      z-index: 10
+    }
 
-.voice-indicator{
-  display:flex;align-items:center;gap:8px;
-  font-size:.65rem;text-transform:uppercase;letter-spacing:.1em;
-  color:rgba(255,255,255,.35);
-}
-.voice-dot{
-  width:6px;height:6px;border-radius:50%;
-  background:#fbbf24;box-shadow:0 0 8px rgba(251,191,36,.5);
-  animation:pulse-dot .8s ease infinite;
-}
-@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.3}}
+    /* ---- Album art ---- */
+    .art-wrap {
+      width: 280px;
+      height: 280px;
+      border-radius: 22px;
+      overflow: hidden;
+      position: relative;
+      margin-bottom: 28px;
+      transition: box-shadow 3s ease;
+    }
 
-.voice-you{
-  font-size:1.4rem;font-weight:600;letter-spacing:-.02em;
-  color:rgba(255,255,255,.85);text-align:center;
-  line-height:1.4;min-height:1.4em;
-}
-.voice-you .word{
-  display:inline-block;opacity:0;transform:translateY(6px);
-  transition:opacity .2s ease,transform .2s ease;
-}
-.voice-you .word.visible{opacity:1;transform:translateY(0)}
+    .art-wrap img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: opacity 1.6s ease, transform 1.6s ease;
+    }
 
-.voice-ziri{
-  font-size:1rem;font-weight:400;
-  color:rgba(74,222,128,.8);text-align:center;
-  line-height:1.5;max-width:460px;
-  opacity:0;transform:translateY(5px);
-  transition:opacity .6s ease .15s,transform .6s ease .15s;
-}
-.voice-ziri.visible{opacity:1;transform:translateY(0)}
+    .art-wrap img.old {
+      opacity: 0;
+      transform: scale(1.06)
+    }
 
-/* ---- 3D Robot Head ---- */
-.bot-scene{
-  z-index:4;margin-top:20px;
-  perspective:600px;
-  width:140px;height:140px;
-  position:relative;
-}
-.bot-head{
-  width:100%;height:100%;
-  transform-style:preserve-3d;
-  transition:transform .5s cubic-bezier(.34,1.56,.64,1);
-  position:relative;
-}
+    .art-wrap img.current {
+      opacity: 1;
+      transform: scale(1)
+    }
 
-/* Helmet shell — rounded cube faces */
-.bh-face{position:absolute;backface-visibility:hidden}
-.bh-front{
-  width:140px;height:120px;top:10px;left:0;
-  background:linear-gradient(170deg,rgba(40,38,65,.95),rgba(18,16,32,.98));
-  border-radius:28px;
-  border:1.5px solid rgba(255,255,255,.08);
-  transform:translateZ(32px);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 40px rgba(0,0,0,.3);
-  overflow:hidden;
-}
-.bh-back{
-  width:140px;height:120px;top:10px;left:0;
-  background:linear-gradient(170deg,rgba(30,28,50,.95),rgba(14,12,26,.98));
-  border-radius:28px;
-  transform:rotateY(180deg) translateZ(32px);
-}
-.bh-left,.bh-right{
-  width:64px;height:120px;top:10px;
-  background:linear-gradient(180deg,rgba(35,33,58,.9),rgba(16,14,28,.95));
-}
-.bh-left{left:-32px;transform:rotateY(-90deg) translateZ(0px);border-radius:0 12px 12px 0}
-.bh-right{right:-32px;transform:rotateY(90deg) translateZ(0px);border-radius:12px 0 0 12px}
-.bh-top{
-  width:140px;height:64px;left:0;top:-22px;
-  background:linear-gradient(180deg,rgba(50,48,75,.9),rgba(30,28,50,.95));
-  transform:rotateX(90deg) translateZ(0px);
-  border-radius:28px 28px 0 0;
-}
+    .art-placeholder {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, .05);
+      color: var(--muted);
+      font-size: .85rem;
+    }
 
-/* Visor — the dark screen area holding the eyes */
-.bh-visor{
-  position:absolute;top:20px;left:12px;right:12px;height:68px;
-  background:rgba(6,5,14,.92);
-  border-radius:16px;
-  border:1px solid rgba(255,255,255,.05);
-  display:flex;align-items:center;justify-content:center;gap:16px;
-  overflow:hidden;
-  box-shadow:inset 0 2px 12px rgba(0,0,0,.5),0 0 20px rgba(0,0,0,.2);
-}
+    /* ---- Track info ---- */
+    .track-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -.03em;
+      text-align: center;
+      max-width: 400px;
+      margin-bottom: 6px;
+      transition: opacity .8s ease, transform .8s ease;
+    }
 
-/* LED eyes — simple glowing rounded rects */
-.bot-eye{
-  width:28px;height:36px;
-  border-radius:8px;
-  background:var(--eye-color,#4ade80);
-  box-shadow:0 0 14px var(--eye-color,#4ade80),0 0 40px color-mix(in srgb,var(--eye-color,#4ade80) 40%,transparent),inset 0 -4px 8px rgba(0,0,0,.3),inset 0 2px 4px rgba(255,255,255,.15);
-  transition:background .5s ease,box-shadow .5s ease,height .35s cubic-bezier(.34,1.56,.64,1),opacity .4s ease,border-radius .35s ease,width .35s ease;
-  position:relative;
-}
-.bot-eye::after{
-  content:'';position:absolute;top:4px;left:5px;
-  width:10px;height:8px;border-radius:4px;
-  background:rgba(255,255,255,.25);
-  transition:opacity .3s ease;
-}
+    .track-artist {
+      font-size: .95rem;
+      color: var(--muted);
+      text-align: center;
+      margin-bottom: 3px;
+      transition: opacity .8s ease, transform .8s ease
+    }
 
-/* Antenna nub on top */
-.bh-antenna{
-  position:absolute;top:-6px;left:50%;
-  width:10px;height:14px;margin-left:-5px;
-  background:linear-gradient(180deg,rgba(80,78,110,1),rgba(40,38,65,1));
-  border-radius:5px 5px 3px 3px;
-  border:1px solid rgba(255,255,255,.1);
-  z-index:2;
-}
-.bh-antenna::after{
-  content:'';position:absolute;top:-6px;left:50%;
-  width:6px;height:6px;margin-left:-3px;border-radius:50%;
-  background:var(--eye-color,#4ade80);
-  box-shadow:0 0 8px var(--eye-color,#4ade80);
-  transition:background .5s ease,box-shadow .5s ease;
-}
+    .track-album {
+      font-size: .76rem;
+      color: var(--muted);
+      opacity: .5;
+      text-align: center;
+      transition: opacity .8s ease
+    }
 
-/* Ear grilles */
-.bh-ear{
-  position:absolute;top:42px;width:8px;height:28px;
-  border-radius:4px;
-  background:repeating-linear-gradient(180deg,rgba(255,255,255,.06) 0px,rgba(255,255,255,.06) 2px,transparent 2px,transparent 5px);
-  border:1px solid rgba(255,255,255,.05);
-}
-.bh-ear.l{left:-6px}
-.bh-ear.r{right:-6px}
+    .track-title.out,
+    .track-artist.out {
+      opacity: 0;
+      transform: translateY(8px)
+    }
 
-/* Chin accent */
-.bh-chin{
-  position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
-  width:40px;height:3px;border-radius:2px;
-  background:rgba(255,255,255,.06);
-}
+    /* ---- Progress ---- */
+    .progress-wrap {
+      width: 280px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 18px;
+      margin-bottom: 14px
+    }
 
-/* State animations */
-@keyframes bot-float{
-  0%,100%{transform:rotateX(2deg) rotateY(0deg) translateY(0)}
-  25%{transform:rotateX(0deg) rotateY(-3deg) translateY(-3px)}
-  50%{transform:rotateX(-2deg) rotateY(0deg) translateY(0)}
-  75%{transform:rotateX(0deg) rotateY(3deg) translateY(-2px)}
-}
-@keyframes bot-alert{
-  0%,100%{transform:rotateX(-5deg) scale(1)}
-  50%{transform:rotateX(-5deg) scale(1.05)}
-}
-@keyframes bot-think{
-  0%,100%{transform:rotateY(0deg) rotateX(3deg)}
-  30%{transform:rotateY(-8deg) rotateX(1deg)}
-  70%{transform:rotateY(8deg) rotateX(5deg)}
-}
-@keyframes bot-speak{
-  0%,100%{transform:rotateX(-2deg) translateY(0)}
-  30%{transform:rotateX(-6deg) translateY(-2px)}
-  60%{transform:rotateX(1deg) translateY(1px)}
-}
-@keyframes bot-blink{
-  0%,40%,44%,100%{height:36px;border-radius:8px}
-  42%{height:3px;border-radius:8px 8px 2px 2px}
-}
+    .progress-bar {
+      flex: 1;
+      height: 3px;
+      background: rgba(255, 255, 255, .1);
+      border-radius: 2px;
+      overflow: hidden
+    }
 
-.bot-scene.state-idle .bot-head{animation:bot-float 5s ease-in-out infinite}
-.bot-scene.state-listening .bot-head{animation:bot-alert 2s ease-in-out infinite}
-.bot-scene.state-transcribing .bot-head,.bot-scene.state-processing .bot-head{animation:bot-think 3.5s ease-in-out infinite}
-.bot-scene.state-speaking .bot-head{animation:bot-speak 1.5s ease-in-out infinite}
-.bot-scene.state-off .bot-head{transform:rotateX(15deg) scale(.9)}
-.bot-scene.state-off .bot-eye{opacity:.15;height:3px}
-.bot-scene.state-idle .bot-eye{animation:bot-blink 4.5s ease infinite}
+    .progress-fill {
+      height: 100%;
+      border-radius: 2px;
+      width: 0;
+      background: rgba(255, 255, 255, .55);
+      transition: width .4s linear;
+    }
 
-/* Burst effect */
-@keyframes color-burst{
-  0%{transform:scale(.6);opacity:.8}
-  50%{transform:scale(2);opacity:.3}
-  100%{transform:scale(3);opacity:0}
-}
-.face-burst{
-  position:absolute;inset:-20px;border-radius:50%;
-  pointer-events:none;opacity:0;z-index:-1;
-}
-.face-burst.pop{animation:color-burst .5s ease-out forwards}
-.face-burst.pop{animation:color-burst .6s ease-out forwards}
+    .progress-time {
+      font-size: .65rem;
+      color: var(--muted);
+      min-width: 30px;
+      text-align: center;
+      font-variant-numeric: tabular-nums
+    }
 
-/* ---- History button + modal ---- */
-.history-btn{
-  position:fixed;bottom:32px;right:32px;z-index:21;
-  width:44px;height:44px;border-radius:50%;cursor:pointer;
-  background:rgba(255,255,255,.08);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
-  border:1px solid rgba(255,255,255,.1);
-  display:flex;align-items:center;justify-content:center;
-  color:rgba(255,255,255,.4);transition:all .25s ease;
-}
-.history-btn:hover{background:rgba(255,255,255,.14);color:rgba(255,255,255,.7);transform:scale(1.08)}
-.history-btn svg{width:18px;height:18px;fill:currentColor}
-.history-btn .hist-badge{
-  position:absolute;top:-2px;right:-2px;width:16px;height:16px;border-radius:50%;
-  background:#4ade80;color:#000;font-size:.55rem;font-weight:700;
-  display:flex;align-items:center;justify-content:center;
-  opacity:0;transform:scale(.5);transition:all .3s ease;
-}
-.history-btn .hist-badge.show{opacity:1;transform:scale(1)}
+    /* ---- Playback controls ---- */
+    .playback-controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      margin-bottom: 16px
+    }
 
-.hist-backdrop{
-  position:fixed;inset:0;z-index:22;
-  opacity:0;pointer-events:none;transition:opacity .3s ease;
-}
-.hist-backdrop.open{opacity:1;pointer-events:auto}
+    .playback-controls button {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(255, 255, 255, .5);
+      transition: color .2s, transform .15s;
+    }
 
-.history-modal{
-  position:fixed;bottom:0;left:50%;transform:translateX(-50%) translateY(100%);
-  z-index:23;width:min(480px,92vw);max-height:70vh;
-  background:rgba(255,255,255,.06);backdrop-filter:blur(40px) saturate(1.4);-webkit-backdrop-filter:blur(40px) saturate(1.4);
-  border:1px solid rgba(255,255,255,.1);border-bottom:none;
-  border-radius:20px 20px 0 0;
-  display:flex;flex-direction:column;
-  transition:transform .4s cubic-bezier(.4,0,.2,1);
-}
-.history-modal.open{transform:translateX(-50%) translateY(0)}
-.hist-header{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:20px 24px 12px;border-bottom:1px solid rgba(255,255,255,.06);
-  flex-shrink:0;
-}
-.hist-header h3{
-  font-size:.8rem;text-transform:uppercase;letter-spacing:.12em;
-  color:rgba(255,255,255,.4);font-weight:500;
-}
-.hist-close{
-  background:none;border:none;cursor:pointer;color:rgba(255,255,255,.3);
-  padding:4px;border-radius:8px;transition:color .2s,background .2s;
-  display:flex;align-items:center;justify-content:center;
-}
-.hist-close:hover{color:rgba(255,255,255,.6);background:rgba(255,255,255,.08)}
-.hist-close svg{width:16px;height:16px;fill:currentColor}
-.hist-body{
-  overflow-y:auto;padding:8px 24px 24px;flex:1;scrollbar-width:none;
-}
-.hist-body::-webkit-scrollbar{display:none}
-.hist-empty{
-  text-align:center;padding:40px 0;color:rgba(255,255,255,.2);font-size:.8rem;
-}
-.hist-item{
-  padding:14px 0;border-bottom:1px solid rgba(255,255,255,.04);
-}
-.hist-item:last-child{border:none}
-.hist-you{
-  font-size:.82rem;color:rgba(255,255,255,.7);margin-bottom:6px;line-height:1.4;
-}
-.hist-ziri{
-  font-size:.82rem;color:rgba(74,222,128,.6);margin-bottom:6px;line-height:1.4;
-}
-.hist-meta{
-  font-size:.6rem;color:rgba(255,255,255,.18);display:flex;gap:6px;align-items:center;
-}
+    .playback-controls button:hover {
+      color: rgba(255, 255, 255, .85)
+    }
 
-/* ---- Vision cam + gesture toast ---- */
-.vision-cam{
-  position:fixed;top:16px;right:16px;z-index:20;
-  width:900px;border-radius:14px;overflow:hidden;
-  border:1px solid rgba(255,255,255,.15);
-  background:rgba(0,0,0,.5);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  transition:opacity .3s ease,transform .3s ease;
-  opacity:.85;
-  box-shadow:0 8px 32px rgba(0,0,0,.4);
-}
-.vision-cam:hover{opacity:1;transform:scale(1.02)}
-.vision-cam video,.vision-cam img{width:100%;display:block;border-radius:14px 14px 0 0;transform:none}
-.vision-cam-bar{
-  display:flex;align-items:center;gap:8px;padding:7px 12px;
-  font-size:.72rem;color:var(--muted);
-}
-.vision-cam-bar .vdot{
-  width:7px;height:7px;border-radius:50%;flex-shrink:0;
-  background:#6b7280;transition:background .3s,box-shadow .3s;
-}
-.vision-cam-bar .vdot.active{background:#4ade80;box-shadow:0 0 8px rgba(74,222,128,.6);animation:pulse-dot .8s ease infinite}
-.vision-cam-bar .vlabel{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .playback-controls button:active {
+      transform: scale(.9)
+    }
 
-.gesture-toast{
-  position:fixed;top:50%;left:50%;z-index:30;
-  transform:translate(-50%,-50%) scale(.7);
-  padding:18px 36px;border-radius:18px;
-  background:rgba(0,0,0,.65);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
-  border:1px solid rgba(255,255,255,.12);
-  font-size:1.4rem;font-weight:700;letter-spacing:-.02em;
-  color:rgba(255,255,255,.95);text-align:center;
-  opacity:0;pointer-events:none;
-  transition:opacity .15s ease,transform .15s ease;
-  white-space:nowrap;
-  box-shadow:0 12px 40px rgba(0,0,0,.5);
-}
-.gesture-toast.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
-.gesture-toast .gicon{font-size:1.5rem;margin-right:8px}
+    .playback-controls button svg {
+      width: 20px;
+      height: 20px;
+      fill: currentColor
+    }
 
-/* ---- Volume overlay (macOS-style) ---- */
-.vol-overlay{
-  position:fixed;top:50%;left:50%;z-index:31;
-  transform:translate(-50%,-50%);
-  width:220px;padding:18px 22px 14px;border-radius:18px;
-  background:rgba(0,0,0,.7);backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);
-  border:1px solid rgba(255,255,255,.1);
-  display:flex;flex-direction:column;align-items:center;gap:10px;
-  opacity:0;pointer-events:none;
-  transition:opacity .15s ease;
-  box-shadow:0 12px 40px rgba(0,0,0,.5);
-}
-.vol-overlay.show{opacity:1}
-.vol-icon{font-size:2rem}
-.vol-bar-wrap{
-  width:100%;height:6px;border-radius:3px;
-  background:rgba(255,255,255,.12);overflow:hidden;
-}
-.vol-bar-fill{
-  height:100%;border-radius:3px;
-  background:rgba(255,255,255,.85);
-  transition:width .15s ease;
-}
-.vol-pct{
-  font-size:.7rem;color:rgba(255,255,255,.5);
-  font-variant-numeric:tabular-nums;
-}
+    .playback-controls .play-pause svg {
+      width: 28px;
+      height: 28px
+    }
 
-canvas#color-canvas{display:none}
-</style>
+    /* ---- Live voice overlay (under controls, in page flow) ---- */
+    .voice-overlay {
+      width: 90%;
+      max-width: 520px;
+      z-index: 3;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      pointer-events: none;
+      min-height: 80px;
+      opacity: 0;
+      transition: opacity .5s ease;
+    }
+
+    .voice-overlay.active {
+      opacity: 1
+    }
+
+    .voice-overlay.fading {
+      opacity: 0;
+      transition: opacity 1.2s ease
+    }
+
+    .voice-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: .65rem;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: rgba(255, 255, 255, .35);
+    }
+
+    .voice-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #fbbf24;
+      box-shadow: 0 0 8px rgba(251, 191, 36, .5);
+      animation: pulse-dot .8s ease infinite;
+    }
+
+    @keyframes pulse-dot {
+
+      0%,
+      100% {
+        opacity: 1
+      }
+
+      50% {
+        opacity: .3
+      }
+    }
+
+    .voice-you {
+      font-size: 1.4rem;
+      font-weight: 600;
+      letter-spacing: -.02em;
+      color: rgba(255, 255, 255, .85);
+      text-align: center;
+      line-height: 1.4;
+      min-height: 1.4em;
+    }
+
+    .voice-you .word {
+      display: inline-block;
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity .2s ease, transform .2s ease;
+    }
+
+    .voice-you .word.visible {
+      opacity: 1;
+      transform: translateY(0)
+    }
+
+    .voice-ziri {
+      font-size: 1rem;
+      font-weight: 400;
+      color: rgba(74, 222, 128, .8);
+      text-align: center;
+      line-height: 1.5;
+      max-width: 460px;
+      opacity: 0;
+      transform: translateY(5px);
+      transition: opacity .6s ease .15s, transform .6s ease .15s;
+    }
+
+    .voice-ziri.visible {
+      opacity: 1;
+      transform: translateY(0)
+    }
+
+    /* ---- 3D Robot Head ---- */
+    .bot-scene {
+      z-index: 4;
+      margin-top: 20px;
+      perspective: 600px;
+      width: 140px;
+      height: 140px;
+      position: relative;
+    }
+
+    .bot-head {
+      width: 100%;
+      height: 100%;
+      transform-style: preserve-3d;
+      transition: transform .5s cubic-bezier(.34, 1.56, .64, 1);
+      position: relative;
+    }
+
+    /* Helmet shell — rounded cube faces */
+    .bh-face {
+      position: absolute;
+      backface-visibility: hidden
+    }
+
+    .bh-front {
+      width: 140px;
+      height: 120px;
+      top: 10px;
+      left: 0;
+      background: var(--body-bg-front, linear-gradient(170deg, rgba(40, 38, 65, .95), rgba(18, 16, 32, .98)));
+      border-radius: 28px;
+      border: 1.5px solid rgba(255, 255, 255, .08);
+      transform: translateZ(32px);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 0 40px rgba(0, 0, 0, .3);
+      overflow: hidden;
+      transition: background .7s ease;
+    }
+
+    .bh-back {
+      width: 140px;
+      height: 120px;
+      top: 10px;
+      left: 0;
+      background: var(--body-bg-back, linear-gradient(170deg, rgba(30, 28, 50, .95), rgba(14, 12, 26, .98)));
+      border-radius: 28px;
+      transform: rotateY(180deg) translateZ(32px);
+      transition: background .7s ease;
+    }
+
+    .bh-left,
+    .bh-right {
+      width: 64px;
+      height: 120px;
+      top: 10px;
+      background: var(--body-bg-side, linear-gradient(180deg, rgba(35, 33, 58, .9), rgba(16, 14, 28, .95)));
+      transition: background .7s ease;
+    }
+
+    .bh-left {
+      left: -32px;
+      transform: rotateY(-90deg) translateZ(0px);
+      border-radius: 0 12px 12px 0
+    }
+
+    .bh-right {
+      right: -32px;
+      transform: rotateY(90deg) translateZ(0px);
+      border-radius: 12px 0 0 12px
+    }
+
+    .bh-top {
+      width: 140px;
+      height: 64px;
+      left: 0;
+      top: -22px;
+      background: var(--body-bg-top, linear-gradient(180deg, rgba(50, 48, 75, .9), rgba(30, 28, 50, .95)));
+      transform: rotateX(90deg) translateZ(0px);
+      border-radius: 28px 28px 0 0;
+      transition: background .7s ease;
+    }
+
+    /* Visor — the dark screen area holding the eyes */
+    .bh-visor {
+      position: absolute;
+      top: 20px;
+      left: 12px;
+      right: 12px;
+      height: 68px;
+      background: rgba(6, 5, 14, .92);
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, .05);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      overflow: hidden;
+      box-shadow: inset 0 2px 12px rgba(0, 0, 0, .5), 0 0 20px rgba(0, 0, 0, .2);
+    }
+
+    /* LED eyes — simple glowing rounded rects */
+    .bot-eye {
+      width: 28px;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--eye-color, #4ade80);
+      box-shadow: 0 0 14px var(--eye-color, #4ade80), 0 0 40px color-mix(in srgb, var(--eye-color, #4ade80) 40%, transparent), inset 0 -4px 8px rgba(0, 0, 0, .3), inset 0 2px 4px rgba(255, 255, 255, .15);
+      transition: background .5s ease, box-shadow .5s ease, height .35s cubic-bezier(.34, 1.56, .64, 1), opacity .4s ease, border-radius .35s ease, width .35s ease;
+      position: relative;
+    }
+
+    .bot-eye::after {
+      content: '';
+      position: absolute;
+      top: 4px;
+      left: 5px;
+      width: 10px;
+      height: 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, .25);
+      transition: opacity .3s ease;
+    }
+
+    /* Liquid Gradient Animation */
+    @keyframes liquid-gradient {
+      0% {
+        background-position: 0% 50%
+      }
+
+      50% {
+        background-position: 100% 50%
+      }
+
+      100% {
+        background-position: 0% 50%
+      }
+    }
+
+    .bot-eye.liquid {
+      background-size: 200% 200% !important;
+      animation: liquid-gradient 2.5s ease infinite, bot-blink 4.5s ease infinite !important;
+    }
+
+    /* Antenna nub on top */
+    .bh-antenna {
+      position: absolute;
+      top: -6px;
+      left: 50%;
+      width: 10px;
+      height: 14px;
+      margin-left: -5px;
+      background: linear-gradient(180deg, rgba(80, 78, 110, 1), rgba(40, 38, 65, 1));
+      border-radius: 5px 5px 3px 3px;
+      border: 1px solid rgba(255, 255, 255, .1);
+      z-index: 2;
+    }
+
+    .bh-antenna::after {
+      content: '';
+      position: absolute;
+      top: -6px;
+      left: 50%;
+      width: 6px;
+      height: 6px;
+      margin-left: -3px;
+      border-radius: 50%;
+      background: var(--eye-color, #4ade80);
+      box-shadow: 0 0 8px var(--eye-color, #4ade80);
+      transition: background .5s ease, box-shadow .5s ease;
+    }
+
+    /* Ear grilles */
+    .bh-ear {
+      position: absolute;
+      top: 42px;
+      width: 8px;
+      height: 28px;
+      border-radius: 4px;
+      background: repeating-linear-gradient(180deg, rgba(255, 255, 255, .06) 0px, rgba(255, 255, 255, .06) 2px, transparent 2px, transparent 5px);
+      border: 1px solid rgba(255, 255, 255, .05);
+    }
+
+    .bh-ear.l {
+      left: -6px
+    }
+
+    .bh-ear.r {
+      right: -6px
+    }
+
+    /* Chin accent */
+    .bh-chin {
+      position: absolute;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 40px;
+      height: 3px;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, .06);
+    }
+
+    /* State animations */
+    @keyframes bot-float {
+
+      0%,
+      100% {
+        transform: rotateX(2deg) rotateY(0deg) translateY(0)
+      }
+
+      25% {
+        transform: rotateX(0deg) rotateY(-3deg) translateY(-3px)
+      }
+
+      50% {
+        transform: rotateX(-2deg) rotateY(0deg) translateY(0)
+      }
+
+      75% {
+        transform: rotateX(0deg) rotateY(3deg) translateY(-2px)
+      }
+    }
+
+    @keyframes bot-alert {
+
+      0%,
+      100% {
+        transform: rotateX(-5deg) scale(1)
+      }
+
+      50% {
+        transform: rotateX(-5deg) scale(1.05)
+      }
+    }
+
+    @keyframes bot-think {
+
+      0%,
+      100% {
+        transform: rotateY(0deg) rotateX(3deg)
+      }
+
+      30% {
+        transform: rotateY(-8deg) rotateX(1deg)
+      }
+
+      70% {
+        transform: rotateY(8deg) rotateX(5deg)
+      }
+    }
+
+    @keyframes bot-speak {
+
+      0%,
+      100% {
+        transform: rotateX(-2deg) translateY(0)
+      }
+
+      30% {
+        transform: rotateX(-6deg) translateY(-2px)
+      }
+
+      60% {
+        transform: rotateX(1deg) translateY(1px)
+      }
+    }
+
+    @keyframes bot-blink {
+
+      0%,
+      40%,
+      44%,
+      100% {
+        height: 36px;
+        border-radius: 8px
+      }
+
+      42% {
+        height: 3px;
+        border-radius: 8px 8px 2px 2px
+      }
+    }
+
+    .bot-scene.state-idle .bot-head {
+      animation: bot-float 5s ease-in-out infinite
+    }
+
+    .bot-scene.state-listening .bot-head {
+      animation: bot-alert 2s ease-in-out infinite
+    }
+
+    .bot-scene.state-transcribing .bot-head,
+    .bot-scene.state-processing .bot-head {
+      animation: bot-think 3.5s ease-in-out infinite
+    }
+
+    .bot-scene.state-speaking .bot-head {
+      animation: bot-speak 1.5s ease-in-out infinite
+    }
+
+    .bot-scene.state-off .bot-head {
+      transform: rotateX(15deg) scale(.9)
+    }
+
+    .bot-scene.state-off .bot-eye {
+      opacity: .15;
+      height: 3px
+    }
+
+    .bot-scene.state-idle .bot-eye:not(.liquid) {
+      animation: bot-blink 4.5s ease infinite
+    }
+
+    /* Burst effect */
+    @keyframes color-burst {
+      0% {
+        transform: scale(.6);
+        opacity: .8
+      }
+
+      50% {
+        transform: scale(2);
+        opacity: .3
+      }
+
+      100% {
+        transform: scale(3);
+        opacity: 0
+      }
+    }
+
+    .face-burst {
+      position: absolute;
+      inset: -20px;
+      border-radius: 50%;
+      pointer-events: none;
+      opacity: 0;
+      z-index: -1;
+    }
+
+    .face-burst.pop {
+      animation: color-burst .5s ease-out forwards
+    }
+
+    .face-burst.pop {
+      animation: color-burst .6s ease-out forwards
+    }
+
+    /* ---- History button + modal ---- */
+    .history-btn {
+      position: fixed;
+      bottom: 32px;
+      right: 32px;
+      z-index: 21;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      cursor: pointer;
+      background: rgba(255, 255, 255, .08);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, .1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(255, 255, 255, .4);
+      transition: all .25s ease;
+    }
+
+    .history-btn:hover {
+      background: rgba(255, 255, 255, .14);
+      color: rgba(255, 255, 255, .7);
+      transform: scale(1.08)
+    }
+
+    .history-btn svg {
+      width: 18px;
+      height: 18px;
+      fill: currentColor
+    }
+
+    .history-btn .hist-badge {
+      position: absolute;
+      top: -2px;
+      right: -2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #4ade80;
+      color: #000;
+      font-size: .55rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transform: scale(.5);
+      transition: all .3s ease;
+    }
+
+    .history-btn .hist-badge.show {
+      opacity: 1;
+      transform: scale(1)
+    }
+
+    .hist-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 22;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .3s ease;
+    }
+
+    .hist-backdrop.open {
+      opacity: 1;
+      pointer-events: auto
+    }
+
+    .history-modal {
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%) translateY(100%);
+      z-index: 23;
+      width: min(480px, 92vw);
+      max-height: 70vh;
+      background: rgba(255, 255, 255, .06);
+      backdrop-filter: blur(40px) saturate(1.4);
+      -webkit-backdrop-filter: blur(40px) saturate(1.4);
+      border: 1px solid rgba(255, 255, 255, .1);
+      border-bottom: none;
+      border-radius: 20px 20px 0 0;
+      display: flex;
+      flex-direction: column;
+      transition: transform .4s cubic-bezier(.4, 0, .2, 1);
+    }
+
+    .history-modal.open {
+      transform: translateX(-50%) translateY(0)
+    }
+
+    .hist-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 24px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, .06);
+      flex-shrink: 0;
+    }
+
+    .hist-header h3 {
+      font-size: .8rem;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      color: rgba(255, 255, 255, .4);
+      font-weight: 500;
+    }
+
+    .hist-close {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: rgba(255, 255, 255, .3);
+      padding: 4px;
+      border-radius: 8px;
+      transition: color .2s, background .2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .hist-close:hover {
+      color: rgba(255, 255, 255, .6);
+      background: rgba(255, 255, 255, .08)
+    }
+
+    .hist-close svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor
+    }
+
+    .hist-body {
+      overflow-y: auto;
+      padding: 8px 24px 24px;
+      flex: 1;
+      scrollbar-width: none;
+    }
+
+    .hist-body::-webkit-scrollbar {
+      display: none
+    }
+
+    .hist-empty {
+      text-align: center;
+      padding: 40px 0;
+      color: rgba(255, 255, 255, .2);
+      font-size: .8rem;
+    }
+
+    .hist-item {
+      padding: 14px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, .04);
+    }
+
+    .hist-item:last-child {
+      border: none
+    }
+
+    .hist-you {
+      font-size: .82rem;
+      color: rgba(255, 255, 255, .7);
+      margin-bottom: 6px;
+      line-height: 1.4;
+    }
+
+    .hist-ziri {
+      font-size: .82rem;
+      color: rgba(74, 222, 128, .6);
+      margin-bottom: 6px;
+      line-height: 1.4;
+    }
+
+    .hist-meta {
+      font-size: .6rem;
+      color: rgba(255, 255, 255, .18);
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    /* ---- Vision cam + gesture toast ---- */
+    .vision-cam {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 20;
+      width: 900px;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, .15);
+      background: rgba(0, 0, 0, .5);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      transition: opacity .3s ease, transform .3s ease;
+      opacity: .85;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, .4);
+    }
+
+    .vision-cam:hover {
+      opacity: 1;
+      transform: scale(1.02)
+    }
+
+    .vision-cam video,
+    .vision-cam img {
+      width: 100%;
+      display: block;
+      border-radius: 14px 14px 0 0;
+      transform: none
+    }
+
+    .vision-cam-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      font-size: .72rem;
+      color: var(--muted);
+    }
+
+    .vision-cam-bar .vdot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: #6b7280;
+      transition: background .3s, box-shadow .3s;
+    }
+
+    .vision-cam-bar .vdot.active {
+      background: #4ade80;
+      box-shadow: 0 0 8px rgba(74, 222, 128, .6);
+      animation: pulse-dot .8s ease infinite
+    }
+
+    .vision-cam-bar .vlabel {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis
+    }
+
+    .gesture-toast {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      z-index: 30;
+      transform: translate(-50%, -50%) scale(.7);
+      padding: 18px 36px;
+      border-radius: 18px;
+      background: rgba(0, 0, 0, .65);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255, 255, 255, .12);
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: -.02em;
+      color: rgba(255, 255, 255, .95);
+      text-align: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .15s ease, transform .15s ease;
+      white-space: nowrap;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+    }
+
+    .gesture-toast.show {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1)
+    }
+
+    .gesture-toast .gicon {
+      font-size: 1.5rem;
+      margin-right: 8px
+    }
+
+    /* ---- Volume overlay (macOS-style) ---- */
+    .vol-overlay {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      z-index: 31;
+      transform: translate(-50%, -50%);
+      width: 220px;
+      padding: 18px 22px 14px;
+      border-radius: 18px;
+      background: rgba(0, 0, 0, .7);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      border: 1px solid rgba(255, 255, 255, .1);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .15s ease;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+    }
+
+    .vol-overlay.show {
+      opacity: 1
+    }
+
+    .vol-icon {
+      font-size: 2rem
+    }
+
+    .vol-bar-wrap {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, .12);
+      overflow: hidden;
+    }
+
+    .vol-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, .85);
+      transition: width .15s ease;
+    }
+
+    .vol-pct {
+      font-size: .7rem;
+      color: rgba(255, 255, 255, .5);
+      font-variant-numeric: tabular-nums;
+    }
+
+    canvas#color-canvas {
+      display: none
+    }
+  </style>
 </head>
+
 <body>
 
-<div id="fluid-bg"></div>
-<canvas id="color-canvas" width="64" height="64"></canvas>
+  <div id="fluid-bg"></div>
+  <canvas id="color-canvas" width="64" height="64"></canvas>
 
-<div class="art-wrap" id="art-wrap">
-  <div class="art-placeholder" id="art-placeholder">No song playing</div>
-</div>
+  <div class="art-wrap" id="art-wrap">
+    <div class="art-placeholder" id="art-placeholder">No song playing</div>
+  </div>
 
-<div class="track-title" id="track-title"></div>
-<div class="track-artist" id="track-artist"></div>
-<div class="track-album" id="track-album"></div>
+  <div class="track-title" id="track-title"></div>
+  <div class="track-artist" id="track-artist"></div>
+  <div class="track-album" id="track-album"></div>
 
-<div class="progress-wrap">
-  <span class="progress-time" id="prog-elapsed">--:--</span>
-  <div class="progress-bar"><div class="progress-fill" id="prog-fill"></div></div>
-  <span class="progress-time" id="prog-total">--:--</span>
-</div>
-
-<div class="playback-controls">
-  <button id="prev-btn" aria-label="Previous track">
-    <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
-  </button>
-  <button id="play-pause-btn" class="play-pause" aria-label="Play / Pause">
-    <svg viewBox="0 0 24 24" id="pp-icon"><path d="M8 5v14l11-7z"/></svg>
-  </button>
-  <button id="next-btn" aria-label="Next track">
-    <svg viewBox="0 0 24 24"><path d="M16 18h2V6h-2zM6 18l8.5-6L6 6z"/></svg>
-  </button>
-</div>
-
-<!-- Live voice overlay (embedded in background) -->
-<div class="voice-overlay" id="voice-overlay">
-  <div class="voice-indicator" id="voice-indicator"><div class="voice-dot"></div><span id="voice-state">Listening...</span></div>
-  <div class="voice-you" id="voice-you"></div>
-  <div class="voice-ziri" id="voice-ziri"></div>
-</div>
-
-<!-- 3D Robot Head -->
-<div class="bot-scene state-idle" id="bot-scene">
-  <div class="face-burst" id="face-burst"></div>
-  <div class="bot-head" id="bot-head">
-    <div class="bh-face bh-front">
-      <div class="bh-visor" id="bot-visor">
-        <div class="bot-eye" id="eye-l"></div>
-        <div class="bot-eye" id="eye-r"></div>
-      </div>
-      <div class="bh-chin"></div>
+  <div class="progress-wrap">
+    <span class="progress-time" id="prog-elapsed">--:--</span>
+    <div class="progress-bar">
+      <div class="progress-fill" id="prog-fill"></div>
     </div>
-    <div class="bh-face bh-back"></div>
-    <div class="bh-face bh-left"></div>
-    <div class="bh-face bh-right"></div>
-    <div class="bh-face bh-top"></div>
-    <div class="bh-antenna" id="bot-antenna"></div>
-    <div class="bh-ear l"></div>
-    <div class="bh-ear r"></div>
+    <span class="progress-time" id="prog-total">--:--</span>
   </div>
-</div>
 
-<!-- History button + modal -->
-<button class="history-btn" id="history-btn" aria-label="Conversation history">
-  <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12zM7 9h2v2H7zm4 0h2v2h-2zm4 0h2v2h-2z"/></svg>
-  <div class="hist-badge" id="hist-badge">0</div>
-</button>
-<div class="hist-backdrop" id="hist-backdrop"></div>
-<div class="history-modal" id="history-modal">
-  <div class="hist-header">
-    <h3>Conversation History</h3>
-    <button class="hist-close" id="hist-close"><svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+  <div class="playback-controls">
+    <button id="prev-btn" aria-label="Previous track">
+      <svg viewBox="0 0 24 24">
+        <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z" />
+      </svg>
+    </button>
+    <button id="play-pause-btn" class="play-pause" aria-label="Play / Pause">
+      <svg viewBox="0 0 24 24" id="pp-icon">
+        <path d="M8 5v14l11-7z" />
+      </svg>
+    </button>
+    <button id="next-btn" aria-label="Next track">
+      <svg viewBox="0 0 24 24">
+        <path d="M16 18h2V6h-2zM6 18l8.5-6L6 6z" />
+      </svg>
+    </button>
   </div>
-  <div class="hist-body" id="hist-list">
-    <div class="hist-empty">No conversations yet</div>
+
+  <!-- Live voice overlay (embedded in background) -->
+  <div class="voice-overlay" id="voice-overlay">
+    <div class="voice-indicator" id="voice-indicator">
+      <div class="voice-dot"></div><span id="voice-state">Listening...</span>
+    </div>
+    <div class="voice-you" id="voice-you"></div>
+    <div class="voice-ziri" id="voice-ziri"></div>
   </div>
-</div>
 
-<!-- Vision camera preview -->
-<div class="vision-cam" id="vision-cam">
-  <img id="vision-feed" src="/vision/feed" alt="Vision feed" />
-  <div class="vision-cam-bar">
-    <div class="vdot" id="vision-dot"></div>
-    <span class="vlabel" id="vision-label">Vision off</span>
+  <!-- 3D Robot Head -->
+  <div class="bot-scene state-idle" id="bot-scene">
+    <div class="face-burst" id="face-burst"></div>
+    <div class="bot-head" id="bot-head">
+      <div class="bh-face bh-front">
+        <div class="bh-visor" id="bot-visor">
+          <div class="bot-eye" id="eye-l"></div>
+          <div class="bot-eye" id="eye-r"></div>
+        </div>
+        <div class="bh-chin"></div>
+      </div>
+      <div class="bh-face bh-back"></div>
+      <div class="bh-face bh-left"></div>
+      <div class="bh-face bh-right"></div>
+      <div class="bh-face bh-top"></div>
+      <div class="bh-antenna" id="bot-antenna"></div>
+      <div class="bh-ear l"></div>
+      <div class="bh-ear r"></div>
+    </div>
   </div>
-</div>
-<div class="gesture-toast" id="gesture-toast"><span class="gicon"></span><span class="gtext"></span></div>
-<div class="vol-overlay" id="vol-overlay">
-  <div class="vol-icon" id="vol-icon">🔊</div>
-  <div class="vol-bar-wrap"><div class="vol-bar-fill" id="vol-fill"></div></div>
-  <div class="vol-pct" id="vol-pct">50%</div>
-</div>
 
-<!-- Debug panel -->
-<div id="debug-toggle" onclick="let p=document.getElementById('debug-panel');p.style.display=p.style.display==='block'?'none':'block'" style="position:fixed;bottom:12px;right:12px;z-index:100;font-size:.65rem;color:rgba(255,255,255,.25);cursor:pointer;user-select:none">debug</div>
-<div id="debug-panel" style="display:none;position:fixed;bottom:32px;right:12px;z-index:99;background:rgba(0,0,0,.75);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:12px 14px;max-width:280px;font-size:.7rem;color:rgba(255,255,255,.6)">
-  <div id="debug-content">loading...</div>
-</div>
-<style>
-.dbg-row{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.05)}
-.dbg-row:last-child{border:none}
-.dbg-label{color:rgba(255,255,255,.35)}
-.dbg-val{text-align:right}
-.dbg-ok{color:#4ade80}
-.dbg-err{color:#f87171}
-.dbg-warn{color:#fbbf24}
-</style>
+  <!-- History button + modal -->
+  <button class="history-btn" id="history-btn" aria-label="Conversation history">
+    <svg viewBox="0 0 24 24">
+      <path
+        d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12zM7 9h2v2H7zm4 0h2v2h-2zm4 0h2v2h-2z" />
+    </svg>
+    <div class="hist-badge" id="hist-badge">0</div>
+  </button>
+  <div class="hist-backdrop" id="hist-backdrop"></div>
+  <div class="history-modal" id="history-modal">
+    <div class="hist-header">
+      <h3>Conversation History</h3>
+      <button class="hist-close" id="hist-close"><svg viewBox="0 0 24 24">
+          <path
+            d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+        </svg></button>
+    </div>
+    <div class="hist-body" id="hist-list">
+      <div class="hist-empty">No conversations yet</div>
+    </div>
+  </div>
 
-<script src="https://cdn.jsdelivr.net/npm/webgl-fluid-enhanced@0.8.0/dist/index.umd.js"></script>
-<script>
-(function(){
-const $=id=>document.getElementById(id);
-const artWrap=$('art-wrap'),artPlaceholder=$('art-placeholder');
-const trackTitle=$('track-title'),trackArtist=$('track-artist'),trackAlbum=$('track-album');
-const progFill=$('prog-fill'),progElapsed=$('prog-elapsed'),progTotal=$('prog-total');
-const prevBtn=$('prev-btn'),playPauseBtn=$('play-pause-btn'),nextBtn=$('next-btn'),ppIcon=$('pp-icon');
-const colorCanvas=$('color-canvas'),colorCtx=colorCanvas.getContext('2d',{willReadFrequently:true});
-const fluidBg=$('fluid-bg');
-const botScene=$('bot-scene'),botHead=$('bot-head'),faceBurst=$('face-burst');
-const eyeL=$('eye-l'),eyeR=$('eye-r'),botAntenna=$('bot-antenna');
+  <!-- Vision camera preview -->
+  <div class="vision-cam" id="vision-cam">
+    <img id="vision-feed" src="/vision/feed" alt="Vision feed" />
+    <div class="vision-cam-bar">
+      <div class="vdot" id="vision-dot"></div>
+      <span class="vlabel" id="vision-label">Vision off</span>
+    </div>
+  </div>
+  <div class="gesture-toast" id="gesture-toast"><span class="gicon"></span><span class="gtext"></span></div>
+  <div class="vol-overlay" id="vol-overlay">
+    <div class="vol-icon" id="vol-icon">🔊</div>
+    <div class="vol-bar-wrap">
+      <div class="vol-bar-fill" id="vol-fill"></div>
+    </div>
+    <div class="vol-pct" id="vol-pct">50%</div>
+  </div>
 
-// ===== Audio analyser (always running for music reactivity) =====
-let audioCtx,analyser,micSrc,freqData,timeData;
-let audioReady=false;
-
-function initAudio(){
-  if(audioCtx)return Promise.resolve();
-  return navigator.mediaDevices.getUserMedia({audio:true}).then(s=>{
-    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-    analyser=audioCtx.createAnalyser();
-    analyser.fftSize=512;
-    analyser.smoothingTimeConstant=.6;
-    micSrc=audioCtx.createMediaStreamSource(s);
-    micSrc.connect(analyser);
-    freqData=new Uint8Array(analyser.frequencyBinCount);
-    timeData=new Uint8Array(analyser.fftSize);
-    audioReady=true;
-  });
-}
-
-function getBands(){
-  if(!audioReady)return{bass:0,mid:0,high:0,vol:0};
-  analyser.getByteFrequencyData(freqData);
-  const len=freqData.length;
-  let bass=0,mid=0,high=0,total=0;
-  const bassEnd=Math.floor(len*.12);
-  const midEnd=Math.floor(len*.45);
-  for(let i=0;i<len;i++){
-    const v=freqData[i]/255;
-    total+=v;
-    if(i<bassEnd)bass+=v;
-    else if(i<midEnd)mid+=v;
-    else high+=v;
-  }
-  return{
-    bass:bass/(bassEnd||1),
-    mid:mid/((midEnd-bassEnd)||1),
-    high:high/((len-midEnd)||1),
-    vol:total/len
-  };
-}
-
-// ===== Stored colors =====
-let col1='80,60,120',col2='40,30,80';
-
-function darken(rgb,f){return rgb.split(',').map(v=>Math.round(Number(v)*f)).join(',')}
-
-function applyBaseColors(c){
-  col1=c?c.d1:'80,60,180';
-  col2=c?c.d2:'40,30,100';
-  document.documentElement.style.setProperty('--d1',col1);
-  document.documentElement.style.setProperty('--d2',col2);
-  document.body.style.background=`rgb(${darken(col2,.1)})`;
-  updateFluidColors();
-}
-
-// ===== WebGL Fluid Background =====
-let fluidSim=null;
-function rgbToHex(rgb){
-  const p=rgb.split(',').map(v=>Math.max(0,Math.min(255,Math.round(Number(v)))));
-  return '#'+p.map(v=>v.toString(16).padStart(2,'0')).join('');
-}
-
-function initFluid(){
-  try{
-    fluidSim=new WebGLFluidEnhanced.default(fluidBg);
-    fluidSim.setConfig({
-      simResolution:128,
-      dyeResolution:512,
-      densityDissipation:.5,
-      velocityDissipation:.1,
-      pressure:.1,
-      pressureIterations:20,
-      curl:3,
-      splatRadius:.1,
-      splatForce:4000,
-      shading:true,
-      colorful:true,
-      colorUpdateSpeed:10,
-      paused:false,
-      backgroundColor:'#140f28',
-      transparent:false,
-      bloom:true,
-      bloomIterations:4,
-      bloomResolution:256,
-      bloomIntensity:.5,
-      bloomThreshold:.8,
-      bloomSoftKnee:.7,
-      sunrays:false,
-      hover:true,
-      brightness:.5
-    });
-    fluidSim.start();
-    fluidBg.style.cssText='position:fixed;inset:0;z-index:0;width:100vw;height:100vh;overflow:hidden';
-  }catch(e){console.warn('Fluid init failed:',e)}
-}
-initFluid();
-
-function updateFluidColors(){
-  if(!fluidSim)return;
-  const hex1=rgbToHex(col1),hex2=rgbToHex(col2);
-  const p=col1.split(',').map(Number);
-  const bg='#'+[p[0]*.08,p[1]*.08,p[2]*.08].map(v=>Math.round(Math.max(0,Math.min(255,v))).toString(16).padStart(2,'0')).join('');
-  try{
-    fluidSim.setConfig({backgroundColor:bg,colorPalette:[hex1,hex2]});
-  }catch(e){}
-}
-
-let pMs=0,dMs=0,pTs=0,npPlaying=false;
-
-// ===== Audio-to-cursor fluid driver =====
-let reactFrame=null;
-let sBass=0,sMid=0,sHigh=0,sVol=0;
-
-const cursors=[];
-const NUM_PATHS=8;
-const PATH_ANGLES=[];
-for(let i=0;i<NUM_PATHS;i++) PATH_ANGLES.push((i/NUM_PATHS)*Math.PI*2);
-
-function getArtCenter(){
-  const r=artWrap.getBoundingClientRect();
-  return{x:r.left+r.width/2,y:r.top+r.height/2};
-}
-
-function fireCursor(pathIdx,speed,length){
-  const c=getArtCenter();
-  const angle=PATH_ANGLES[pathIdx]+(Math.random()-.5)*.4;
-  cursors.push({x:c.x,y:c.y,dx:Math.cos(angle)*speed,dy:Math.sin(angle)*speed,life:length});
-}
-
-function tickCursors(){
-  const canvas=fluidBg?.querySelector('canvas');
-  if(!canvas)return;
-  for(let i=cursors.length-1;i>=0;i--){
-    const c=cursors[i];
-    c.x+=c.dx;c.y+=c.dy;c.life--;
-    const rect=canvas.getBoundingClientRect();
-    const ox=c.x-rect.left,oy=c.y-rect.top;
-    const evt=new MouseEvent('mousemove',{clientX:c.x,clientY:c.y,bubbles:true,cancelable:true});
-    Object.defineProperty(evt,'offsetX',{get:()=>ox});
-    Object.defineProperty(evt,'offsetY',{get:()=>oy});
-    canvas.dispatchEvent(evt);
-    if(c.life<=0)cursors.splice(i,1);
-  }
-}
-
-let lastBassHit=0,lastMidHit=0,lastHighHit=0;
-
-function reactLoop(){
-  const b=getBands();
-  const lerp=.14;
-  sBass+=(b.bass-sBass)*lerp;
-  sMid+=(b.mid-sMid)*lerp;
-  sHigh+=(b.high-sHigh)*lerp;
-  sVol+=(b.vol-sVol)*lerp;
-
-  const now=performance.now();
-
-  if(audioReady&&sVol>.03){
-    if(sBass>.12&&now-lastBassHit>180){
-      lastBassHit=now;
-      const idx=Math.floor(Math.random()*3);
-      const speed=10+sBass*14;
-      const len=Math.floor(6+sBass*8);
-      fireCursor(idx,speed,len);
-      if(sBass>.4) fireCursor((idx+4)%8,speed*.8,len);
+  <!-- Debug panel -->
+  <div id="debug-toggle"
+    onclick="let p=document.getElementById('debug-panel');p.style.display=p.style.display==='block'?'none':'block'"
+    style="position:fixed;bottom:12px;right:12px;z-index:100;font-size:.65rem;color:rgba(255,255,255,.25);cursor:pointer;user-select:none">
+    debug</div>
+  <div id="debug-panel"
+    style="display:none;position:fixed;bottom:32px;right:12px;z-index:99;background:rgba(0,0,0,.75);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:12px 14px;max-width:280px;font-size:.7rem;color:rgba(255,255,255,.6)">
+    <div id="debug-content">loading...</div>
+  </div>
+  <style>
+    .dbg-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 3px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, .05)
     }
-    if(sMid>.08&&now-lastMidHit>150){
-      lastMidHit=now;
-      const idx=3+Math.floor(Math.random()*3);
-      const speed=10+sMid*12;
-      const len=Math.floor(5+sMid*7);
-      fireCursor(idx,speed,len);
+
+    .dbg-row:last-child {
+      border: none
     }
-    if(sHigh>.05&&now-lastHighHit>100){
-      lastHighHit=now;
-      const idx=6+Math.floor(Math.random()*2);
-      const speed=12+sHigh*16;
-      const len=Math.floor(4+sHigh*5);
-      fireCursor(idx,speed,len);
+
+    .dbg-label {
+      color: rgba(255, 255, 255, .35)
     }
-  }
 
-  tickCursors();
-
-  const glowSpread=20+sBass*40;
-  const glowSize=80+sBass*60;
-  artWrap.style.boxShadow=`0 ${glowSpread}px ${glowSize}px rgba(${col1},${.25+sBass*.3}), 0 0 ${100+sBass*60}px rgba(${col1},${.1+sBass*.15})`;
-
-  if(botScene&&eyeL){
-    const sc=1+sVol*.08+sBass*.06;
-    botScene.style.transform=`scale(${sc})`;
-    const glow=14+sBass*20;
-    const color=eyeL.style.getPropertyValue('background')||'#4ade80';
-    eyeL.style.boxShadow=`0 0 ${glow}px var(--eye-color,#4ade80),0 0 ${glow*2.5}px color-mix(in srgb,var(--eye-color,#4ade80) 40%,transparent),inset 0 -4px 8px rgba(0,0,0,.3),inset 0 2px 4px rgba(255,255,255,.15)`;
-    eyeR.style.boxShadow=eyeL.style.boxShadow;
-  }
-
-  reactFrame=requestAnimationFrame(reactLoop);
-}
-
-reactLoop();
-
-function ensureAudio(){
-  if(audioReady)return;
-  initAudio().catch(e=>{console.warn('Audio init failed:',e)});
-}
-document.addEventListener('click',ensureAudio,{once:true});
-
-// ===== Color extraction =====
-function extractColors(img){
-  try{
-    colorCanvas.width=64;colorCanvas.height=64;
-    colorCtx.drawImage(img,0,0,64,64);
-    const data=colorCtx.getImageData(0,0,64,64).data;
-    const px=[];
-    for(let i=0;i<data.length;i+=4){
-      const r=data[i],g=data[i+1],b=data[i+2];
-      const bri=r*.299+g*.587+b*.114;
-      if(bri<20||bri>240)continue;
-      const sat=Math.max(r,g,b)-Math.min(r,g,b);
-      if(sat<15)continue;
-      px.push([r,g,b,sat]);
+    .dbg-val {
+      text-align: right
     }
-    if(px.length<10)return null;
-    px.sort((a,b)=>b[3]-a[3]);
-    const top=px.slice(0,Math.min(px.length,100));
-    const h=Math.floor(top.length/2);
-    let r1=0,g1=0,b1=0,r2=0,g2=0,b2=0;
-    for(let i=0;i<h;i++){r1+=top[i][0];g1+=top[i][1];b1+=top[i][2]}
-    for(let i=h;i<top.length;i++){r2+=top[i][0];g2+=top[i][1];b2+=top[i][2]}
-    const n1=h||1,n2=(top.length-h)||1;
-    return{
-      d1:`${Math.round(r1/n1)},${Math.round(g1/n1)},${Math.round(b1/n1)}`,
-      d2:`${Math.round(r2/n2)},${Math.round(g2/n2)},${Math.round(b2/n2)}`
-    };
-  }catch(e){return null}
-}
 
-// ===== Now Playing =====
-let curUri='',curArt='';
-function fmt(ms){const s=Math.floor(ms/1000),m=Math.floor(s/60),sec=s%60;return`${m}:${sec<10?'0':''}${sec}`}
-function tick(){
-  if(!dMs)return;let e=pMs;if(npPlaying)e+=Date.now()-pTs;e=Math.min(e,dMs);
-  progFill.style.width=(e/dMs*100)+'%';progElapsed.textContent=fmt(e);progTotal.textContent=fmt(dMs);
-}
-setInterval(tick,400);
+    .dbg-ok {
+      color: #4ade80
+    }
 
-async function poll(){
-  try{
-    const r=await fetch('/spotify/now-playing');const d=await r.json();
-    if(!d.playing){
-      if(curUri){
-        trackTitle.textContent='';trackArtist.textContent='';trackAlbum.textContent='';
-        progFill.style.width='0';progElapsed.textContent='--:--';progTotal.textContent='--:--';
-        artPlaceholder.style.display='flex';curUri='';applyBaseColors(null);
+    .dbg-err {
+      color: #f87171
+    }
+
+    .dbg-warn {
+      color: #fbbf24
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/webgl-fluid-enhanced@0.8.0/dist/index.umd.js"></script>
+  <script>
+    (function () {
+      const $ = id => document.getElementById(id);
+      const artWrap = $('art-wrap'), artPlaceholder = $('art-placeholder');
+      const trackTitle = $('track-title'), trackArtist = $('track-artist'), trackAlbum = $('track-album');
+      const progFill = $('prog-fill'), progElapsed = $('prog-elapsed'), progTotal = $('prog-total');
+      const prevBtn = $('prev-btn'), playPauseBtn = $('play-pause-btn'), nextBtn = $('next-btn'), ppIcon = $('pp-icon');
+      const colorCanvas = $('color-canvas'), colorCtx = colorCanvas.getContext('2d', { willReadFrequently: true });
+      const fluidBg = $('fluid-bg');
+      const botScene = $('bot-scene'), botHead = $('bot-head'), faceBurst = $('face-burst');
+      const eyeL = $('eye-l'), eyeR = $('eye-r'), botAntenna = $('bot-antenna');
+
+      // ===== Audio analyser (always running for music reactivity) =====
+      let audioCtx, analyser, micSrc, freqData, timeData;
+      let audioReady = false;
+
+      function initAudio() {
+        if (audioCtx) return Promise.resolve();
+        return navigator.mediaDevices.getUserMedia({ audio: true }).then(s => {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          analyser = audioCtx.createAnalyser();
+          analyser.fftSize = 512;
+          analyser.smoothingTimeConstant = .6;
+          micSrc = audioCtx.createMediaStreamSource(s);
+          micSrc.connect(analyser);
+          freqData = new Uint8Array(analyser.frequencyBinCount);
+          timeData = new Uint8Array(analyser.fftSize);
+          audioReady = true;
+        });
       }
-      return;
-    }
-    pMs=d.progress_ms||0;dMs=d.duration_ms||0;pTs=Date.now();npPlaying=d.is_playing;tick();
-    updatePPIcon();
-    if(d.spotify_uri===curUri)return;
-    curUri=d.spotify_uri||'';
 
-    // Smooth text transition
-    trackTitle.classList.add('out');trackArtist.classList.add('out');trackAlbum.style.opacity='0';
-    setTimeout(()=>{
-      trackTitle.textContent=d.track||'';trackArtist.textContent=d.artist||'';trackAlbum.textContent=d.album||'';
-      trackTitle.classList.remove('out');trackArtist.classList.remove('out');trackAlbum.style.opacity='.5';
-    },500);
+      function getBands() {
+        if (!audioReady) return { bass: 0, mid: 0, high: 0, vol: 0 };
+        analyser.getByteFrequencyData(freqData);
+        const len = freqData.length;
+        let bass = 0, mid = 0, high = 0, total = 0;
+        const bassEnd = Math.floor(len * .12);
+        const midEnd = Math.floor(len * .45);
+        for (let i = 0; i < len; i++) {
+          const v = freqData[i] / 255;
+          total += v;
+          if (i < bassEnd) bass += v;
+          else if (i < midEnd) mid += v;
+          else high += v;
+        }
+        return {
+          bass: bass / (bassEnd || 1),
+          mid: mid / ((midEnd - bassEnd) || 1),
+          high: high / ((len - midEnd) || 1),
+          vol: total / len
+        };
+      }
 
-    // Crossfade album art
-    if(d.album_art&&d.album_art!==curArt){
-      curArt=d.album_art;artPlaceholder.style.display='none';
-      const img=new Image();img.crossOrigin='anonymous';
-      img.onload=()=>{
-        const old=artWrap.querySelectorAll('img');old.forEach(i=>i.classList.add('old'));
-        img.classList.add('current');artWrap.appendChild(img);
-        const c=extractColors(img);
-        applyBaseColors(c);
-        setTimeout(()=>{old.forEach(i=>{if(i.parentNode)i.parentNode.removeChild(i)})},1800);
-      };
-      img.src='/spotify/art-proxy?url='+encodeURIComponent(d.album_art);
-    }
-  }catch(e){}
-}
-poll();setInterval(poll,3000);
+      // ===== Stored colors =====
+      let col1 = '80,60,120', col2 = '40,30,80';
 
-// ===== Playback controls =====
-const PLAY_PATH='M8 5v14l11-7z';
-const PAUSE_PATH='M6 19h4V5H6v14zm8-14v14h4V5h-4z';
+      function darken(rgb, f) { return rgb.split(',').map(v => Math.round(Number(v) * f)).join(',') }
 
-function updatePPIcon(){ppIcon.innerHTML='<path d="'+(npPlaying?PAUSE_PATH:PLAY_PATH)+'"/>'}
-updatePPIcon();
+      function applyBaseColors(c) {
+        col1 = c ? c.d1 : '80,60,180';
+        col2 = c ? c.d2 : '40,30,100';
+        document.documentElement.style.setProperty('--d1', col1);
+        document.documentElement.style.setProperty('--d2', col2);
+        document.body.style.background = `rgb(${darken(col2, .1)})`;
+        updateFluidColors();
+      }
 
-playPauseBtn.addEventListener('click',()=>{
-  const endpoint=npPlaying?'/spotify/pause':'/spotify/play';
-  fetch(endpoint,{method:'POST'}).then(()=>{npPlaying=!npPlaying;updatePPIcon();setTimeout(poll,400)}).catch(()=>{});
-});
-prevBtn.addEventListener('click',()=>{fetch('/spotify/prev',{method:'POST'}).then(()=>setTimeout(poll,500)).catch(()=>{})});
-nextBtn.addEventListener('click',()=>{fetch('/spotify/next',{method:'POST'}).then(()=>setTimeout(poll,500)).catch(()=>{})});
+      // ===== WebGL Fluid Background =====
+      let fluidSim = null;
+      function rgbToHex(rgb) {
+        const p = rgb.split(',').map(v => Math.max(0, Math.min(255, Math.round(Number(v)))));
+        return '#' + p.map(v => v.toString(16).padStart(2, '0')).join('');
+      }
 
-// ===== Bluetooth keepalive (silent tone) =====
-let keepaliveCtx=null;
-function startKeepalive(){
-  if(keepaliveCtx)return;
-  try{
-    keepaliveCtx=new(window.AudioContext||window.webkitAudioContext)();
-    const osc=keepaliveCtx.createOscillator();
-    const gain=keepaliveCtx.createGain();
-    osc.frequency.value=1;
-    gain.gain.value=0.001;
-    osc.connect(gain);gain.connect(keepaliveCtx.destination);
-    osc.start();
-  }catch(e){}
-}
-document.addEventListener('click',startKeepalive,{once:true});
+      function initFluid() {
+        try {
+          fluidSim = new WebGLFluidEnhanced.default(fluidBg);
+          fluidSim.setConfig({
+            simResolution: 128,
+            dyeResolution: 512,
+            densityDissipation: .5,
+            velocityDissipation: .1,
+            pressure: .1,
+            pressureIterations: 20,
+            curl: 3,
+            splatRadius: .1,
+            splatForce: 4000,
+            shading: true,
+            colorful: true,
+            colorUpdateSpeed: 10,
+            paused: false,
+            backgroundColor: '#140f28',
+            transparent: false,
+            bloom: true,
+            bloomIterations: 4,
+            bloomResolution: 256,
+            bloomIntensity: .5,
+            bloomThreshold: .8,
+            bloomSoftKnee: .7,
+            sunrays: false,
+            hover: true,
+            brightness: .5
+          });
+          fluidSim.start();
+          fluidBg.style.cssText = 'position:fixed;inset:0;z-index:0;width:100vw;height:100vh;overflow:hidden';
+        } catch (e) { console.warn('Fluid init failed:', e) }
+      }
+      initFluid();
 
-// ===== Live voice overlay + history =====
-const voiceOverlay=$('voice-overlay'),voiceYou=$('voice-you'),voiceZiri=$('voice-ziri');
-const voiceIndicator=$('voice-indicator'),voiceState=$('voice-state');
-const histBtn=$('history-btn'),histBadge=$('hist-badge'),histBackdrop=$('hist-backdrop'),histModal=$('history-modal'),histClose=$('hist-close'),histList=$('hist-list');
+      function updateFluidColors() {
+        if (!fluidSim) return;
+        const hex1 = rgbToHex(col1), hex2 = rgbToHex(col2);
+        const p = col1.split(',').map(Number);
+        const bg = '#' + [p[0] * .08, p[1] * .08, p[2] * .08].map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('');
+        try {
+          fluidSim.setConfig({ backgroundColor: bg, colorPalette: [hex1, hex2] });
+        } catch (e) { }
+      }
 
-const stateLabels={idle:'',listening:'Listening...',transcribing:'Transcribing...',processing:'Thinking...',speaking:'Speaking...',not_started:''};
-function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+      let pMs = 0, dMs = 0, pTs = 0, npPlaying = false;
 
-let prevState='idle',prevTranscript='',prevResponse='',fadeTimer=null,shownWordsFor='';
+      // ===== Audio-to-cursor fluid driver =====
+      let reactFrame = null;
+      let sBass = 0, sMid = 0, sHigh = 0, sVol = 0;
 
-const BOT_COLORS={
-  idle:'#4ade80',
-  listening:'#fbbf24',
-  transcribing:'#60a5fa',
-  processing:'#60a5fa',
-  speaking:'#c084fc',
-  off:'#f87171'
-};
+      const cursors = [];
+      const NUM_PATHS = 8;
+      const PATH_ANGLES = [];
+      for (let i = 0; i < NUM_PATHS; i++) PATH_ANGLES.push((i / NUM_PATHS) * Math.PI * 2);
 
-const BOT_EYES={
-  idle:     {h:36,w:28,r:8,op:1},
-  listening:{h:42,w:32,r:10,op:1},
-  transcribing:{h:18,w:28,r:6,op:.7},
-  processing:{h:18,w:28,r:6,op:.7},
-  speaking: {h:38,w:30,r:9,op:.95},
-  off:      {h:3,w:28,r:2,op:.15}
-};
+      function getArtCenter() {
+        const r = artWrap.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
 
-let curFaceState='idle';
+      function fireCursor(pathIdx, speed, length) {
+        const c = getArtCenter();
+        const angle = PATH_ANGLES[pathIdx] + (Math.random() - .5) * .4;
+        cursors.push({ x: c.x, y: c.y, dx: Math.cos(angle) * speed, dy: Math.sin(angle) * speed, life: length });
+      }
 
-function setEyeColor(color){
-  botScene.style.setProperty('--eye-color',color);
-  [eyeL,eyeR].forEach(e=>{
-    e.style.background=color;
-    e.style.boxShadow=`0 0 14px ${color},0 0 40px color-mix(in srgb,${color} 40%,transparent),inset 0 -4px 8px rgba(0,0,0,.3),inset 0 2px 4px rgba(255,255,255,.15)`;
-  });
-}
+      function tickCursors() {
+        const canvas = fluidBg?.querySelector('canvas');
+        if (!canvas) return;
+        for (let i = cursors.length - 1; i >= 0; i--) {
+          const c = cursors[i];
+          c.x += c.dx; c.y += c.dy; c.life--;
+          const rect = canvas.getBoundingClientRect();
+          const ox = c.x - rect.left, oy = c.y - rect.top;
+          const evt = new MouseEvent('mousemove', { clientX: c.x, clientY: c.y, bubbles: true, cancelable: true });
+          Object.defineProperty(evt, 'offsetX', { get: () => ox });
+          Object.defineProperty(evt, 'offsetY', { get: () => oy });
+          canvas.dispatchEvent(evt);
+          if (c.life <= 0) cursors.splice(i, 1);
+        }
+      }
 
-function setEyeShape(cfg){
-  [eyeL,eyeR].forEach(e=>{
-    e.style.height=cfg.h+'px';
-    e.style.width=cfg.w+'px';
-    e.style.borderRadius=cfg.r+'px';
-    e.style.opacity=cfg.op;
-  });
-}
+      let lastBassHit = 0, lastMidHit = 0, lastHighHit = 0;
 
-function fireColorBurst(color){
-  faceBurst.style.background=`radial-gradient(circle,${color} 0%,transparent 70%)`;
-  faceBurst.classList.remove('pop');
-  void faceBurst.offsetWidth;
-  faceBurst.classList.add('pop');
-}
+      function reactLoop() {
+        const b = getBands();
+        const lerp = .14;
+        sBass += (b.bass - sBass) * lerp;
+        sMid += (b.mid - sMid) * lerp;
+        sHigh += (b.high - sHigh) * lerp;
+        sVol += (b.vol - sVol) * lerp;
 
-function updateFace(state){
-  if(!state||state==='not_started')state='idle';
-  if(state===curFaceState)return;
+        const now = performance.now();
 
-  const color=BOT_COLORS[state]||BOT_COLORS.idle;
-  const eye=BOT_EYES[state]||BOT_EYES.idle;
+        if (audioReady && sVol > .03) {
+          if (sBass > .12 && now - lastBassHit > 180) {
+            lastBassHit = now;
+            const idx = Math.floor(Math.random() * 3);
+            const speed = 10 + sBass * 14;
+            const len = Math.floor(6 + sBass * 8);
+            fireCursor(idx, speed, len);
+            if (sBass > .4) fireCursor((idx + 4) % 8, speed * .8, len);
+          }
+          if (sMid > .08 && now - lastMidHit > 150) {
+            lastMidHit = now;
+            const idx = 3 + Math.floor(Math.random() * 3);
+            const speed = 10 + sMid * 12;
+            const len = Math.floor(5 + sMid * 7);
+            fireCursor(idx, speed, len);
+          }
+          if (sHigh > .05 && now - lastHighHit > 100) {
+            lastHighHit = now;
+            const idx = 6 + Math.floor(Math.random() * 2);
+            const speed = 12 + sHigh * 16;
+            const len = Math.floor(4 + sHigh * 5);
+            fireCursor(idx, speed, len);
+          }
+        }
 
-  fireColorBurst(color);
-  botScene.className='bot-scene state-'+state;
-  setEyeColor(color);
-  setEyeShape(eye);
+        tickCursors();
 
-  curFaceState=state;
-}
+        const glowSpread = 20 + sBass * 40;
+        const glowSize = 80 + sBass * 60;
+        artWrap.style.boxShadow = `0 ${glowSpread}px ${glowSize}px rgba(${col1},${.25 + sBass * .3}), 0 0 ${100 + sBass * 60}px rgba(${col1},${.1 + sBass * .15})`;
 
-function typewriterWords(container,text){
-  if(shownWordsFor===text)return;
-  shownWordsFor=text;
-  const words=text.split(/\s+/);
-  container.innerHTML=words.map(w=>`<span class="word">${esc(w)}</span> `).join('');
-  const spans=container.querySelectorAll('.word');
-  spans.forEach((sp,i)=>{
-    setTimeout(()=>sp.classList.add('visible'),i*90);
-  });
-}
+        if (botScene && eyeL) {
+          const sc = 1 + sVol * .08 + sBass * .06;
+          botScene.style.transform = `scale(${sc})`;
+          const glow = 14 + sBass * 20;
+          const color = eyeL.style.getPropertyValue('background') || '#4ade80';
+          eyeL.style.boxShadow = `0 0 ${glow}px var(--eye-color,#4ade80),0 0 ${glow * 2.5}px color-mix(in srgb,var(--eye-color,#4ade80) 40%,transparent),inset 0 -4px 8px rgba(0,0,0,.3),inset 0 2px 4px rgba(255,255,255,.15)`;
+          eyeR.style.boxShadow = eyeL.style.boxShadow;
+        }
 
-function showOverlay(state,transcript,response){
-  if(fadeTimer){clearTimeout(fadeTimer);fadeTimer=null}
+        reactFrame = requestAnimationFrame(reactLoop);
+      }
 
-  updateFace(state);
+      reactLoop();
 
-  if(state==='idle'&&prevState==='idle'&&!response)return;
+      function ensureAudio() {
+        if (audioReady) return;
+        initAudio().catch(e => { console.warn('Audio init failed:', e) });
+      }
+      document.addEventListener('click', ensureAudio, { once: true });
 
-  if(state!=='idle'){
-    voiceOverlay.classList.remove('fading');
-    voiceOverlay.classList.add('active');
-    voiceIndicator.style.display='none';
+      // ===== Color extraction =====
+      function extractColors(img) {
+        try {
+          colorCanvas.width = 64; colorCanvas.height = 64;
+          colorCtx.drawImage(img, 0, 0, 64, 64);
+          const data = colorCtx.getImageData(0, 0, 64, 64).data;
+          const px = [];
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i], g = data[i + 1], b = data[i + 2];
+            const bri = r * .299 + g * .587 + b * .114;
+            if (bri < 20 || bri > 240) continue;
+            const sat = Math.max(r, g, b) - Math.min(r, g, b);
+            if (sat < 15) continue;
+            px.push([r, g, b, sat]);
+          }
+          if (px.length < 10) return null;
+          px.sort((a, b) => b[3] - a[3]);
+          const top = px.slice(0, Math.min(px.length, 100));
+          const h = Math.floor(top.length / 2);
+          let r1 = 0, g1 = 0, b1 = 0, r2 = 0, g2 = 0, b2 = 0;
+          for (let i = 0; i < h; i++) { r1 += top[i][0]; g1 += top[i][1]; b1 += top[i][2] }
+          for (let i = h; i < top.length; i++) { r2 += top[i][0]; g2 += top[i][1]; b2 += top[i][2] }
+          const n1 = h || 1, n2 = (top.length - h) || 1;
+          return {
+            d1: `${Math.round(r1 / n1)},${Math.round(g1 / n1)},${Math.round(b1 / n1)}`,
+            d2: `${Math.round(r2 / n2)},${Math.round(g2 / n2)},${Math.round(b2 / n2)}`
+          };
+        } catch (e) { return null }
+      }
 
-    if(transcript){
-      typewriterWords(voiceYou,transcript);
-    }
-    if(response){
-      voiceZiri.textContent=response;
-      voiceZiri.classList.add('visible');
-    }
-  }
+      // ===== Now Playing =====
+      let curUri = '', curArt = '';
+      function fmt(ms) { const s = Math.floor(ms / 1000), m = Math.floor(s / 60), sec = s % 60; return `${m}:${sec < 10 ? '0' : ''}${sec}` }
+      function tick() {
+        if (!dMs) return; let e = pMs; if (npPlaying) e += Date.now() - pTs; e = Math.min(e, dMs);
+        progFill.style.width = (e / dMs * 100) + '%'; progElapsed.textContent = fmt(e); progTotal.textContent = fmt(dMs);
+      }
+      setInterval(tick, 400);
 
-  if(state==='idle'&&prevState!=='idle'){
-    if(response&&!prevResponse){
-      voiceZiri.textContent=response;
-      voiceZiri.classList.add('visible');
-    }
+      async function poll() {
+        try {
+          const r = await fetch('/spotify/now-playing'); const d = await r.json();
+          if (!d.playing) {
+            if (curUri) {
+              trackTitle.textContent = ''; trackArtist.textContent = ''; trackAlbum.textContent = '';
+              progFill.style.width = '0'; progElapsed.textContent = '--:--'; progTotal.textContent = '--:--';
+              artPlaceholder.style.display = 'flex'; curUri = ''; applyBaseColors(null);
+            }
+            return;
+          }
+          pMs = d.progress_ms || 0; dMs = d.duration_ms || 0; pTs = Date.now(); npPlaying = d.is_playing; tick();
+          updatePPIcon();
+          if (d.spotify_uri === curUri) return;
+          curUri = d.spotify_uri || '';
 
-    const holdMs=(prevResponse||response)?2500:300;
-    fadeTimer=setTimeout(()=>{
-      voiceOverlay.classList.remove('active');
-      voiceOverlay.classList.add('fading');
-      setTimeout(()=>{
-        voiceOverlay.classList.remove('fading');
-        voiceYou.innerHTML='';
-        voiceZiri.textContent='';
-        voiceZiri.classList.remove('visible');
-        shownWordsFor='';
-      },1200);
-    },holdMs);
-  }
+          // Smooth text transition
+          trackTitle.classList.add('out'); trackArtist.classList.add('out'); trackAlbum.style.opacity = '0';
+          setTimeout(() => {
+            trackTitle.textContent = d.track || ''; trackArtist.textContent = d.artist || ''; trackAlbum.textContent = d.album || '';
+            trackTitle.classList.remove('out'); trackArtist.classList.remove('out'); trackAlbum.style.opacity = '.5';
+          }, 500);
 
-  prevState=state;
-  if(transcript)prevTranscript=transcript;
-  if(response)prevResponse=response;
-}
+          // Crossfade album art
+          if (d.album_art && d.album_art !== curArt) {
+            curArt = d.album_art; artPlaceholder.style.display = 'none';
+            const img = new Image(); img.crossOrigin = 'anonymous';
+            img.onload = () => {
+              const old = artWrap.querySelectorAll('img'); old.forEach(i => i.classList.add('old'));
+              img.classList.add('current'); artWrap.appendChild(img);
+              const c = extractColors(img);
+              applyBaseColors(c);
+              setTimeout(() => { old.forEach(i => { if (i.parentNode) i.parentNode.removeChild(i) }) }, 1800);
+            };
+            img.src = '/spotify/art-proxy?url=' + encodeURIComponent(d.album_art);
+          }
+        } catch (e) { }
+      }
+      poll(); setInterval(poll, 3000);
 
-// History modal
-function openHistory(){histModal.classList.add('open');histBackdrop.classList.add('open')}
-function closeHistory(){histModal.classList.remove('open');histBackdrop.classList.remove('open')}
-histBtn.addEventListener('click',openHistory);
-histClose.addEventListener('click',closeHistory);
-histBackdrop.addEventListener('click',closeHistory);
+      // ===== Playback controls =====
+      const PLAY_PATH = 'M8 5v14l11-7z';
+      const PAUSE_PATH = 'M6 19h4V5H6v14zm8-14v14h4V5h-4z';
 
-let lastHistLen=0;
-function renderHistory(history){
-  if(!history)return;
-  if(history.length!==lastHistLen){
-    const count=history.length;
-    if(count>0){
-      histBadge.textContent=count>99?'99+':count;
-      histBadge.classList.add('show');
-    }else{
-      histBadge.classList.remove('show');
-    }
-    lastHistLen=count;
-    if(!count){histList.innerHTML='<div class="hist-empty">No conversations yet</div>';return}
-    histList.innerHTML='';
-    history.forEach(item=>{
-      const el=document.createElement('div');
-      el.className='hist-item';
-      const ts=item.timestamp?new Date(item.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';
-      let h=`<div class="hist-you">${esc(item.transcript)}</div>`;
-      if(item.speak_text)h+=`<div class="hist-ziri">${esc(item.speak_text)}</div>`;
-      if(item.error)h+=`<div style="color:#f87171;font-size:.7rem">${esc(item.error)}</div>`;
-      const meta=[ts];
-      if(item.action_code&&item.action_code!=='NO_OP')meta.push(item.action_code);
-      if(item.latency_ms)meta.push(item.latency_ms+'ms');
-      h+=`<div class="hist-meta">${meta.join(' · ')}</div>`;
-      el.innerHTML=h;
-      histList.appendChild(el);
-    });
-  }
-}
+      function updatePPIcon() { ppIcon.innerHTML = '<path d="' + (npPlaying ? PAUSE_PATH : PLAY_PATH) + '"/>' }
+      updatePPIcon();
 
-// Face indicator + main poll
-async function pollListener(){
-  try{
-    const r=await fetch('/dashboard/api');
-    const d=await r.json();
-    const L=d.listener;
-    if(!L){updateFace('off');return}
-
-    if(!L.running){
-      updateFace('off');
-    } else {
-      updateFace(L.state);
-    }
-
-    pollInterval=(L.state&&L.state!=='idle')?250:600;
-
-    showOverlay(L.state,L.current_transcript,L.current_response);
-    renderHistory(L.history);
-  }catch(e){
-    updateFace('off');
-  }
-}
-let pollInterval=600;
-function schedulePoll(){setTimeout(async()=>{await pollListener();schedulePoll()},pollInterval)}
-pollListener();schedulePoll();
-
-// ===== Debug panel =====
-async function loadDebug(){
-  try{
-    const r=await fetch('/debug/connections');
-    const d=await r.json();
-    const dc=document.getElementById('debug-content');
-    const ok='<span class="dbg-ok">connected</span>';
-    const no='<span class="dbg-err">disconnected</span>';
-    let h='';
-    h+=`<div class="dbg-row"><span class="dbg-label">Spotify</span><span class="dbg-val">${d.spotify?.connected?ok:no}</span></div>`;
-    if(d.spotify?.devices?.length){
-      d.spotify.devices.forEach(dev=>{
-        h+=`<div class="dbg-row"><span class="dbg-label" style="padding-left:8px">${dev.name}</span><span class="dbg-val">${dev.is_active?'<span class="dbg-ok">active</span>':'idle'}</span></div>`;
+      playPauseBtn.addEventListener('click', () => {
+        const endpoint = npPlaying ? '/spotify/pause' : '/spotify/play';
+        fetch(endpoint, { method: 'POST' }).then(() => { npPlaying = !npPlaying; updatePPIcon(); setTimeout(poll, 400) }).catch(() => { });
       });
-    }
-    h+=`<div class="dbg-row"><span class="dbg-label">Bedrock</span><span class="dbg-val">${d.bedrock?.connected?ok:no}</span></div>`;
-    if(d.bedrock?.model)h+=`<div class="dbg-row"><span class="dbg-label" style="padding-left:8px">model</span><span class="dbg-val" style="font-size:.6rem;max-width:160px;word-break:break-all">${d.bedrock.model.split('/').pop()}</span></div>`;
-    h+=`<div class="dbg-row"><span class="dbg-label">TTS</span><span class="dbg-val dbg-ok">${d.tts?.engine||'?'}</span></div>`;
-    h+=`<div class="dbg-row"><span class="dbg-label">Memory</span><span class="dbg-val">${d.memory||'?'}</span></div>`;
-    dc.innerHTML=h;
-  }catch(e){document.getElementById('debug-content').textContent='Failed to load'}
-}
-loadDebug();
-setInterval(loadDebug,10000);
+      prevBtn.addEventListener('click', () => { fetch('/spotify/prev', { method: 'POST' }).then(() => setTimeout(poll, 500)).catch(() => { }) });
+      nextBtn.addEventListener('click', () => { fetch('/spotify/next', { method: 'POST' }).then(() => setTimeout(poll, 500)).catch(() => { }) });
 
-// ===== Vision camera preview + gesture feedback =====
-const visionCam=$('vision-cam'),visionFeed=$('vision-feed');
-const visionDot=$('vision-dot'),visionLabel=$('vision-label');
-const gestureToast=$('gesture-toast');
+      // ===== Bluetooth keepalive (silent tone) =====
+      let keepaliveCtx = null;
+      function startKeepalive() {
+        if (keepaliveCtx) return;
+        try {
+          keepaliveCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = keepaliveCtx.createOscillator();
+          const gain = keepaliveCtx.createGain();
+          osc.frequency.value = 1;
+          gain.gain.value = 0.001;
+          osc.connect(gain); gain.connect(keepaliveCtx.destination);
+          osc.start();
+        } catch (e) { }
+      }
+      document.addEventListener('click', startKeepalive, { once: true });
 
-const gestureIcons={
-  pause:'\u23F8\uFE0F',resume:'\u25B6\uFE0F',
-  volume_up:'\uD83D\uDD0A',volume_down:'\uD83D\uDD09',
-  next_track:'\u23ED\uFE0F',prev_track:'\u23EE\uFE0F'
-};
-const gestureLabels={
-  pause:'Paused',resume:'Resumed',
-  volume_up:'Volume Up',volume_down:'Volume Down',
-  next_track:'Next Track',prev_track:'Previous Track'
-};
+      // ===== Live voice overlay + history =====
+      const voiceOverlay = $('voice-overlay'), voiceYou = $('voice-you'), voiceZiri = $('voice-ziri');
+      const voiceIndicator = $('voice-indicator'), voiceState = $('voice-state');
+      const histBtn = $('history-btn'), histBadge = $('hist-badge'), histBackdrop = $('hist-backdrop'), histModal = $('history-modal'), histClose = $('hist-close'), histList = $('hist-list');
 
-visionFeed.onerror=()=>{visionCam.style.display='none'};
+      const stateLabels = { idle: '', listening: 'Listening...', transcribing: 'Transcribing...', processing: 'Thinking...', speaking: 'Speaking...', not_started: '' };
+      function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML }
 
-const volOverlay=$('vol-overlay'),volFill=$('vol-fill'),volPct=$('vol-pct'),volIconEl=$('vol-icon');
-let volLevel=50,volTimer=null;
+      let prevState = 'idle', prevTranscript = '', prevResponse = '', fadeTimer = null, shownWordsFor = '';
 
-function showVolumeOverlay(direction){
-  volLevel=Math.max(0,Math.min(100,volLevel+(direction==='up'?10:-10)));
-  volFill.style.width=volLevel+'%';
-  volPct.textContent=volLevel+'%';
-  volIconEl.textContent=volLevel===0?'\uD83D\uDD07':volLevel<40?'\uD83D\uDD09':'\uD83D\uDD0A';
-  volOverlay.classList.add('show');
-  if(volTimer)clearTimeout(volTimer);
-  volTimer=setTimeout(()=>volOverlay.classList.remove('show'),1500);
-}
+      const BOT_STATES = {
+        idle: {
+          burst: '#4ade80',
+          eyeBg: '#4ade80',
+          eyeGlowColor: '#4ade80'
+        },
+        listening: {
+          burst: '#ffffff',
+          eyeBg: '#ffffff',
+          eyeGlowColor: '#ffffff',
+          bodyFront: 'linear-gradient(170deg,rgba(0,191,255,0.95),rgba(0,102,255,0.98))',
+          bodyBack: 'linear-gradient(170deg,rgba(0,153,255,0.95),rgba(0,51,204,0.98))',
+          bodySide: 'linear-gradient(180deg,rgba(0,170,255,0.9),rgba(0,76,230,0.95))',
+          bodyTop: 'linear-gradient(180deg,rgba(51,204,255,0.9),rgba(0,128,255,0.95))'
+        },
+        transcribing: {
+          burst: '#d946ef',
+          eyeBg: 'linear-gradient(270deg, #c026d3, #f472b6, #c026d3)',
+          eyeGlowColor: '#d946ef',
+          liquidEye: true
+        },
+        processing: {
+          burst: '#d946ef',
+          eyeBg: 'linear-gradient(270deg, #c026d3, #f472b6, #c026d3)',
+          eyeGlowColor: '#d946ef',
+          liquidEye: true
+        },
+        speaking: {
+          burst: '#c084fc',
+          eyeBg: '#c084fc',
+          eyeGlowColor: '#c084fc'
+        },
+        off: {
+          burst: '#f87171',
+          eyeBg: '#f87171',
+          eyeGlowColor: '#f87171'
+        }
+      };
 
-let toastTimer=null;
-function showGestureToast(gesture){
-  if(gesture==='volume_up'){showVolumeOverlay('up');return}
-  if(gesture==='volume_down'){showVolumeOverlay('down');return}
-  const icon=gestureIcons[gesture]||'\u2728';
-  const label=gestureLabels[gesture]||gesture;
-  gestureToast.querySelector('.gicon').textContent=icon;
-  gestureToast.querySelector('.gtext').textContent=label;
-  gestureToast.classList.add('show');
-  if(toastTimer)clearTimeout(toastTimer);
-  toastTimer=setTimeout(()=>gestureToast.classList.remove('show'),1200);
-}
+      const BOT_EYES = {
+        idle: { h: 36, w: 28, r: 8, op: 1 },
+        listening: { h: 42, w: 32, r: 10, op: 1 },
+        transcribing: { h: 18, w: 28, r: 6, op: .7 },
+        processing: { h: 18, w: 28, r: 6, op: .7 },
+        speaking: { h: 38, w: 30, r: 9, op: .95 },
+        off: { h: 3, w: 28, r: 2, op: .15 }
+      };
 
-let lastGestureCount=0;
-async function pollVision(){
-  try{
-    const r=await fetch('/vision/status');
-    const d=await r.json();
-    if(!d.running){
-      visionDot.className='vdot';
-      visionLabel.textContent='Vision off';
-      return;
-    }
-    visionDot.className='vdot'+(d.tracking?' active':'');
-    visionLabel.textContent=d.tracking?'Fist locked - tracking':'Make a fist to command';
+      let curFaceState = 'idle';
 
-    if(d.gesture_count>lastGestureCount&&d.history&&d.history.length){
-      const latest=d.history[0];
-      showGestureToast(latest.gesture);
-    }
-    lastGestureCount=d.gesture_count;
-  }catch(e){}
-}
-pollVision();
-setInterval(pollVision,400);
+      function setBodyColor(stateCfg) {
+        if (stateCfg.bodyFront) {
+          botScene.style.setProperty('--body-bg-front', stateCfg.bodyFront);
+          botScene.style.setProperty('--body-bg-back', stateCfg.bodyBack);
+          botScene.style.setProperty('--body-bg-side', stateCfg.bodySide);
+          botScene.style.setProperty('--body-bg-top', stateCfg.bodyTop);
+        } else {
+          botScene.style.removeProperty('--body-bg-front');
+          botScene.style.removeProperty('--body-bg-back');
+          botScene.style.removeProperty('--body-bg-side');
+          botScene.style.removeProperty('--body-bg-top');
+        }
+      }
 
-})();
-</script>
+      function setEyeColor(cfg) {
+        botScene.style.setProperty('--eye-color', cfg.eyeGlowColor);
+        [eyeL, eyeR].forEach(e => {
+          e.style.background = cfg.eyeBg;
+          if (cfg.liquidEye) {
+            e.classList.add('liquid');
+          } else {
+            e.classList.remove('liquid');
+          }
+
+          if (cfg.eyeGlowColor === '#ffffff') {
+            e.style.boxShadow = `0 0 24px #ffffff,0 0 60px rgba(255,255,255,.8),inset 0 -4px 8px rgba(0,0,0,.1),inset 0 2px 4px rgba(255,255,255,.9)`;
+          } else {
+            e.style.boxShadow = `0 0 14px ${cfg.eyeGlowColor},0 0 40px color-mix(in srgb,${cfg.eyeGlowColor} 40%,transparent),inset 0 -4px 8px rgba(0,0,0,.3),inset 0 2px 4px rgba(255,255,255,.15)`;
+          }
+        });
+      }
+
+      function setEyeShape(cfg) {
+        [eyeL, eyeR].forEach(e => {
+          e.style.height = cfg.h + 'px';
+          e.style.width = cfg.w + 'px';
+          e.style.borderRadius = cfg.r + 'px';
+          e.style.opacity = cfg.op;
+        });
+      }
+
+      function fireColorBurst(color) {
+        faceBurst.style.background = `radial-gradient(circle,${color} 0%,transparent 70%)`;
+        faceBurst.classList.remove('pop');
+        void faceBurst.offsetWidth;
+        faceBurst.classList.add('pop');
+      }
+
+      function updateFace(state) {
+        if (!state || state === 'not_started') state = 'idle';
+        if (state === curFaceState) return;
+
+        const stateCfg = BOT_STATES[state] || BOT_STATES.idle;
+        const eye = BOT_EYES[state] || BOT_EYES.idle;
+
+        fireColorBurst(stateCfg.burst);
+        botScene.className = 'bot-scene state-' + state;
+        setEyeColor(stateCfg);
+        setEyeShape(eye);
+        setBodyColor(stateCfg);
+
+        curFaceState = state;
+      }
+
+      function typewriterWords(container, text) {
+        if (shownWordsFor === text) return;
+        shownWordsFor = text;
+        const words = text.split(/\s+/);
+        container.innerHTML = words.map(w => `<span class="word">${esc(w)}</span> `).join('');
+        const spans = container.querySelectorAll('.word');
+        spans.forEach((sp, i) => {
+          setTimeout(() => sp.classList.add('visible'), i * 90);
+        });
+      }
+
+      function showOverlay(state, transcript, response) {
+        if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null }
+
+        updateFace(state);
+
+        if (state === 'idle' && prevState === 'idle' && !response) return;
+
+        if (state !== 'idle') {
+          voiceOverlay.classList.remove('fading');
+          voiceOverlay.classList.add('active');
+          voiceIndicator.style.display = 'none';
+
+          if (transcript) {
+            typewriterWords(voiceYou, transcript);
+          }
+          if (response) {
+            voiceZiri.textContent = response;
+            voiceZiri.classList.add('visible');
+          }
+        }
+
+        if (state === 'idle' && prevState !== 'idle') {
+          if (response && !prevResponse) {
+            voiceZiri.textContent = response;
+            voiceZiri.classList.add('visible');
+          }
+
+          const holdMs = (prevResponse || response) ? 2500 : 300;
+          fadeTimer = setTimeout(() => {
+            voiceOverlay.classList.remove('active');
+            voiceOverlay.classList.add('fading');
+            setTimeout(() => {
+              voiceOverlay.classList.remove('fading');
+              voiceYou.innerHTML = '';
+              voiceZiri.textContent = '';
+              voiceZiri.classList.remove('visible');
+              shownWordsFor = '';
+            }, 1200);
+          }, holdMs);
+        }
+
+        prevState = state;
+        if (transcript) prevTranscript = transcript;
+        if (response) prevResponse = response;
+      }
+
+      // History modal
+      function openHistory() { histModal.classList.add('open'); histBackdrop.classList.add('open') }
+      function closeHistory() { histModal.classList.remove('open'); histBackdrop.classList.remove('open') }
+      histBtn.addEventListener('click', openHistory);
+      histClose.addEventListener('click', closeHistory);
+      histBackdrop.addEventListener('click', closeHistory);
+
+      let lastHistLen = 0;
+      function renderHistory(history) {
+        if (!history) return;
+        if (history.length !== lastHistLen) {
+          const count = history.length;
+          if (count > 0) {
+            histBadge.textContent = count > 99 ? '99+' : count;
+            histBadge.classList.add('show');
+          } else {
+            histBadge.classList.remove('show');
+          }
+          lastHistLen = count;
+          if (!count) { histList.innerHTML = '<div class="hist-empty">No conversations yet</div>'; return }
+          histList.innerHTML = '';
+          history.forEach(item => {
+            const el = document.createElement('div');
+            el.className = 'hist-item';
+            const ts = item.timestamp ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+            let h = `<div class="hist-you">${esc(item.transcript)}</div>`;
+            if (item.speak_text) h += `<div class="hist-ziri">${esc(item.speak_text)}</div>`;
+            if (item.error) h += `<div style="color:#f87171;font-size:.7rem">${esc(item.error)}</div>`;
+            const meta = [ts];
+            if (item.action_code && item.action_code !== 'NO_OP') meta.push(item.action_code);
+            if (item.latency_ms) meta.push(item.latency_ms + 'ms');
+            h += `<div class="hist-meta">${meta.join(' · ')}</div>`;
+            el.innerHTML = h;
+            histList.appendChild(el);
+          });
+        }
+      }
+
+      // Face indicator + main poll
+      async function pollListener() {
+        try {
+          const r = await fetch('/dashboard/api');
+          const d = await r.json();
+          const L = d.listener;
+          if (!L) { updateFace('off'); return }
+
+          if (!L.running) {
+            updateFace('off');
+          } else {
+            updateFace(L.state);
+          }
+
+          pollInterval = (L.state && L.state !== 'idle') ? 250 : 600;
+
+          showOverlay(L.state, L.current_transcript, L.current_response);
+          renderHistory(L.history);
+        } catch (e) {
+          updateFace('off');
+        }
+      }
+      let pollInterval = 600;
+      function schedulePoll() { setTimeout(async () => { await pollListener(); schedulePoll() }, pollInterval) }
+      pollListener(); schedulePoll();
+
+      // ===== Debug panel =====
+      async function loadDebug() {
+        try {
+          const r = await fetch('/debug/connections');
+          const d = await r.json();
+          const dc = document.getElementById('debug-content');
+          const ok = '<span class="dbg-ok">connected</span>';
+          const no = '<span class="dbg-err">disconnected</span>';
+          let h = '';
+          h += `<div class="dbg-row"><span class="dbg-label">Spotify</span><span class="dbg-val">${d.spotify?.connected ? ok : no}</span></div>`;
+          if (d.spotify?.devices?.length) {
+            d.spotify.devices.forEach(dev => {
+              h += `<div class="dbg-row"><span class="dbg-label" style="padding-left:8px">${dev.name}</span><span class="dbg-val">${dev.is_active ? '<span class="dbg-ok">active</span>' : 'idle'}</span></div>`;
+            });
+          }
+          h += `<div class="dbg-row"><span class="dbg-label">Bedrock</span><span class="dbg-val">${d.bedrock?.connected ? ok : no}</span></div>`;
+          if (d.bedrock?.model) h += `<div class="dbg-row"><span class="dbg-label" style="padding-left:8px">model</span><span class="dbg-val" style="font-size:.6rem;max-width:160px;word-break:break-all">${d.bedrock.model.split('/').pop()}</span></div>`;
+          h += `<div class="dbg-row"><span class="dbg-label">TTS</span><span class="dbg-val dbg-ok">${d.tts?.engine || '?'}</span></div>`;
+          h += `<div class="dbg-row"><span class="dbg-label">Memory</span><span class="dbg-val">${d.memory || '?'}</span></div>`;
+          dc.innerHTML = h;
+        } catch (e) { document.getElementById('debug-content').textContent = 'Failed to load' }
+      }
+      loadDebug();
+      setInterval(loadDebug, 10000);
+
+      // ===== Vision camera preview + gesture feedback =====
+      const visionCam = $('vision-cam'), visionFeed = $('vision-feed');
+      const visionDot = $('vision-dot'), visionLabel = $('vision-label');
+      const gestureToast = $('gesture-toast');
+
+      const gestureIcons = {
+        pause: '\u23F8\uFE0F', resume: '\u25B6\uFE0F',
+        volume_up: '\uD83D\uDD0A', volume_down: '\uD83D\uDD09',
+        next_track: '\u23ED\uFE0F', prev_track: '\u23EE\uFE0F'
+      };
+      const gestureLabels = {
+        pause: 'Paused', resume: 'Resumed',
+        volume_up: 'Volume Up', volume_down: 'Volume Down',
+        next_track: 'Next Track', prev_track: 'Previous Track'
+      };
+
+      visionFeed.onerror = () => { visionCam.style.display = 'none' };
+
+      const volOverlay = $('vol-overlay'), volFill = $('vol-fill'), volPct = $('vol-pct'), volIconEl = $('vol-icon');
+      let volLevel = 50, volTimer = null;
+
+      function showVolumeOverlay(direction) {
+        volLevel = Math.max(0, Math.min(100, volLevel + (direction === 'up' ? 10 : -10)));
+        volFill.style.width = volLevel + '%';
+        volPct.textContent = volLevel + '%';
+        volIconEl.textContent = volLevel === 0 ? '\uD83D\uDD07' : volLevel < 40 ? '\uD83D\uDD09' : '\uD83D\uDD0A';
+        volOverlay.classList.add('show');
+        if (volTimer) clearTimeout(volTimer);
+        volTimer = setTimeout(() => volOverlay.classList.remove('show'), 1500);
+      }
+
+      let toastTimer = null;
+      function showGestureToast(gesture) {
+        if (gesture === 'volume_up') { showVolumeOverlay('up'); return }
+        if (gesture === 'volume_down') { showVolumeOverlay('down'); return }
+        const icon = gestureIcons[gesture] || '\u2728';
+        const label = gestureLabels[gesture] || gesture;
+        gestureToast.querySelector('.gicon').textContent = icon;
+        gestureToast.querySelector('.gtext').textContent = label;
+        gestureToast.classList.add('show');
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => gestureToast.classList.remove('show'), 1200);
+      }
+
+      let lastGestureCount = 0;
+      async function pollVision() {
+        try {
+          const r = await fetch('/vision/status');
+          const d = await r.json();
+          if (!d.running) {
+            visionDot.className = 'vdot';
+            visionLabel.textContent = 'Vision off';
+            return;
+          }
+          visionDot.className = 'vdot' + (d.tracking ? ' active' : '');
+          visionLabel.textContent = d.tracking ? 'Fist locked - tracking' : 'Make a fist to command';
+
+          if (d.gesture_count > lastGestureCount && d.history && d.history.length) {
+            const latest = d.history[0];
+            showGestureToast(latest.gesture);
+          }
+          lastGestureCount = d.gesture_count;
+        } catch (e) { }
+      }
+      pollVision();
+      setInterval(pollVision, 400);
+
+    })();
+  </script>
 </body>
+
 </html>

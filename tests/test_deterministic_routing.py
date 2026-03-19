@@ -95,13 +95,23 @@ _VOLUME_DOWN = [
     "turn down the volume", "bit quieter", "a bit quieter", "not so loud",
 ]
 
+_VOLUME_MAX = [
+    "volume max", "max volume", "full volume", "volume full",
+    "turn it all the way up", "crank it to the max", "maximum volume",
+]
+
+_VOLUME_CALM = [
+    "volume calm", "calm volume", "quiet mode", "background volume",
+    "background music", "chill volume", "low volume",
+]
+
 
 @pytest.mark.parametrize("phrase", _VOLUME_UP)
 def test_volume_up(phrase: str) -> None:
     d = deterministic_route(phrase)
     assert d is not None
     assert d.tool_name == "spotify.adjust_volume"
-    assert d.tool_args["delta_percent"] == 15
+    assert d.tool_args["delta_percent"] == 20
 
 
 @pytest.mark.parametrize("phrase", _VOLUME_DOWN)
@@ -109,7 +119,23 @@ def test_volume_down(phrase: str) -> None:
     d = deterministic_route(phrase)
     assert d is not None
     assert d.tool_name == "spotify.adjust_volume"
-    assert d.tool_args["delta_percent"] == -15
+    assert d.tool_args["delta_percent"] == -20
+
+
+@pytest.mark.parametrize("phrase", _VOLUME_MAX)
+def test_volume_max(phrase: str) -> None:
+    d = deterministic_route(phrase)
+    assert d is not None
+    assert d.tool_name == "spotify.set_volume"
+    assert d.tool_args["percent"] == 100
+
+
+@pytest.mark.parametrize("phrase", _VOLUME_CALM)
+def test_volume_calm(phrase: str) -> None:
+    d = deterministic_route(phrase)
+    assert d is not None
+    assert d.tool_name == "spotify.set_volume"
+    assert d.tool_args["percent"] == 35
 
 
 @pytest.mark.parametrize("text,expected", [

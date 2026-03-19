@@ -38,6 +38,7 @@ MAX_LISTEN_SECONDS = 10
 MAX_RETRIES = 5
 RETRY_DELAY = 3.0
 MAX_HISTORY = 50
+PRE_WAKEWORD_BUFFER_SECS = 2.0  # rolling buffer of audio before wake word
 
 # --------------- Silero VAD tuning ---------------
 VAD_THRESHOLD = 0.40            # prob above which a 32ms chunk is "speech"
@@ -114,6 +115,13 @@ class Listener:
         self._last_active_ts: float = 0
         self._last_partial_ts: float = 0
         self.history: collections.deque[InteractionRecord] = collections.deque(maxlen=MAX_HISTORY)
+        
+        # Rolling buffer of pre-wake-word audio for speaker identification
+        pre_ww_samples = int(PRE_WAKEWORD_BUFFER_SECS * TARGET_RATE)
+        self._pre_wakeword_buffer: collections.deque[np.ndarray] = collections.deque(
+            maxlen=pre_ww_samples // WAKEWORD_CHUNK + 10
+        )
+        self._wakeword_audio: np.ndarray | None = None  # captured at wake word trigger
 
     # ------------------------------------------------------------------
     # Model loaders
@@ -255,6 +263,8 @@ class Listener:
 
                         if self.state == State.IDLE:
                             ww_buffer = np.concatenate([ww_buffer, chunk])
+                            # Maintain rolling pre-wake-word buffer for speaker identification
+                            self._pre_wakeword_buffer.append(chunk.copy())
                             while len(ww_buffer) >= WAKEWORD_CHUNK:
                                 frame = ww_buffer[:WAKEWORD_CHUNK]
                                 ww_buffer = ww_buffer[WAKEWORD_CHUNK:]
@@ -298,7 +308,7 @@ class Listener:
     def _duck_spotify(self) -> None:
         """Lower Spotify volume so Ziri can be heard."""
         try:
-            self.hub.orchestrator.tool_runner.spotify.duck(duck_percent=20)
+            self.hub.orchestrator.tool_runner.spotify.duck(duck_percent=45)
         except Exception as exc:
             logger.debug("Spotify duck failed (non-critical): %s", exc)
 
@@ -320,6 +330,18 @@ class Listener:
                 logger.info("Wake word detected! (%s, score=%.2f)", mdl_name, score)
                 self._wakeword_model.reset()
                 self._wake_count += 1
+                
+                # Capture pre-wake-word audio for speaker identification
+                if self._pre_wakeword_buffer:
+                    pre_ww_secs = self.settings.speaker_filter_pre_wakeword_secs
+                    samples_needed = int(pre_ww_secs * TARGET_RATE)
+                    pre_ww_audio = np.concatenate(list(self._pre_wakeword_buffer))
+                    # Take the last N seconds
+                    self._wakeword_audio = pre_ww_audio[-samples_needed:] if len(pre_ww_audio) > samples_needed else pre_ww_audio
+                    logger.info("Captured %.2fs of pre-wake-word audio for speaker ID", len(self._wakeword_audio) / TARGET_RATE)
+                else:
+                    self._wakeword_audio = None
+                
                 self._transition_to_listening()
                 return
 
@@ -643,8 +665,11 @@ class Listener:
             Listener._stt_http = httpx.Client(timeout=10, verify=self._stt_ssl_ctx)
         return self._stt_http
 
-    def _transcribe_elevenlabs(self, audio_float: np.ndarray) -> str | None:
-        """Send audio to ElevenLabs Scribe API. Returns transcript or None."""
+    def _transcribe_elevenlabs(self, audio_float: np.ndarray, use_diarization: bool = False) -> str | None:
+        """Send audio to ElevenLabs Scribe API. Returns transcript or None.
+        
+        If use_diarization=True, returns only the first speaker's words (the wake word speaker).
+        """
         import io
         import struct
 
@@ -663,24 +688,128 @@ class Listener:
 
         try:
             client = self._get_stt_http()
+            data = {
+                "model_id": "scribe_v2",
+                "language_code": "eng",
+                "tag_audio_events": "false",
+            }
+            if use_diarization:
+                data["diarize"] = "true"
+                data["timestamps_granularity"] = "word"
+            
             resp = client.post(
                 "https://api.elevenlabs.io/v1/speech-to-text",
                 headers={"xi-api-key": self.settings.elevenlabs_api_key},
                 files={"file": ("audio.wav", buf, "audio/wav")},
-                data={
-                    "model_id": "scribe_v2",
-                    "language_code": "eng",
-                    "tag_audio_events": "false",
-                },
+                data=data,
+                timeout=15,  # diarization may take slightly longer
             )
             if resp.status_code == 200:
-                text = resp.json().get("text", "").strip()
+                result = resp.json()
+                
+                if use_diarization and "words" in result:
+                    filtered_text = self._filter_by_first_speaker(result)
+                    if filtered_text:
+                        return filtered_text
+                    # Fall back to full text if filtering fails, but still strip wake phrase
+                    logger.warning("Speaker filtering returned empty, using full transcript (with wake phrase stripped)")
+                
+                text = result.get("text", "").strip()
+                # Always strip wake phrase when diarization is enabled (since we prepended wake word audio)
+                if use_diarization and text:
+                    text = self._strip_wake_phrase(text)
                 return text if text else None
             logger.warning("ElevenLabs STT failed (status %d): %s", resp.status_code, resp.text[:200])
             return None
         except Exception as exc:
             logger.warning("ElevenLabs STT error: %s", exc)
             return None
+
+    def _filter_by_first_speaker(self, stt_result: dict) -> str | None:
+        """Filter transcription to only include words from the first speaker.
+        
+        The first speaker is assumed to be the person who said "Hey Jarvis" since
+        we prepend the wake word audio to the command audio.
+        
+        Args:
+            stt_result: ElevenLabs STT response with diarization enabled
+            
+        Returns:
+            Filtered transcript containing only the first speaker's words,
+            or None if no words found.
+        """
+        words = stt_result.get("words", [])
+        if not words:
+            return None
+        
+        # Find the first speaker (the one who said "hey jarvis")
+        first_speaker_id = None
+        for word in words:
+            speaker_id = word.get("speaker_id")
+            if speaker_id:
+                first_speaker_id = speaker_id
+                break
+        
+        if not first_speaker_id:
+            logger.warning("No speaker_id found in diarization response")
+            # Still strip wake word from full text
+            return self._strip_wake_phrase(stt_result.get("text", "").strip())
+        
+        # Collect all words from the first speaker
+        first_speaker_words = []
+        other_speakers = set()
+        
+        for word in words:
+            word_text = word.get("text", "")
+            word_type = word.get("type", "word")
+            speaker_id = word.get("speaker_id")
+            
+            # Skip spacing and audio events
+            if word_type != "word":
+                continue
+                
+            if speaker_id == first_speaker_id:
+                first_speaker_words.append(word_text)
+            elif speaker_id:
+                other_speakers.add(speaker_id)
+        
+        if other_speakers:
+            logger.info(
+                "Speaker filtering: kept %d words from %s, filtered out %d other speaker(s)",
+                len(first_speaker_words), first_speaker_id, len(other_speakers)
+            )
+        
+        filtered_text = " ".join(first_speaker_words).strip()
+        
+        # Remove the wake word phrase from the text
+        filtered_text = self._strip_wake_phrase(filtered_text)
+        
+        return filtered_text if filtered_text else None
+
+    def _strip_wake_phrase(self, text: str) -> str:
+        """Remove wake word phrases from the beginning of text."""
+        if not text:
+            return text
+            
+        # Patterns to strip (case-insensitive)
+        wake_phrases = [
+            "hey jarvis", "hey, jarvis", "hey jarvis,", "hey, jarvis,",
+            "jarvis", "jarvis,",  # Sometimes just "Jarvis" is transcribed
+        ]
+        
+        result = text
+        text_lower = result.lower().strip()
+        
+        for phrase in wake_phrases:
+            if text_lower.startswith(phrase):
+                result = result[len(phrase):].strip()
+                # Also strip leading punctuation/whitespace
+                result = result.lstrip(" ,.!?")
+                text_lower = result.lower().strip()
+                # Check again in case there's another pattern
+                break
+        
+        return result
 
     def _ensure_local_whisper(self):
         """Lazily load a real faster-whisper model for local fallback."""
@@ -721,11 +850,36 @@ class Listener:
             self.state = State.IDLE
             return
 
-        audio = np.concatenate(self._capture_frames).astype(np.float32) / 32768.0
+        command_audio = np.concatenate(self._capture_frames).astype(np.float32) / 32768.0
         self._capture_frames = []
-        logger.info("[DEBUG] Audio: %.2fs, using %s path",
-                    len(audio) / TARGET_RATE,
-                    "elevenlabs-sdk" if (self._whisper_model == "elevenlabs" and getattr(self, '_el_connection', None)) else "fallback")
+        
+        # Determine if we should use speaker filtering
+        use_speaker_filter = (
+            self.settings.speaker_filter_enabled
+            and self._whisper_model == "elevenlabs"
+            and self._wakeword_audio is not None
+        )
+        
+        if use_speaker_filter:
+            # Prepend wake word audio for speaker identification
+            wakeword_float = self._wakeword_audio.astype(np.float32) / 32768.0
+            audio = np.concatenate([wakeword_float, command_audio])
+            logger.info(
+                "[DEBUG] Audio: %.2fs (%.2fs wake word + %.2fs command), speaker filtering ENABLED",
+                len(audio) / TARGET_RATE,
+                len(wakeword_float) / TARGET_RATE,
+                len(command_audio) / TARGET_RATE,
+            )
+        else:
+            audio = command_audio
+            logger.info("[DEBUG] Audio: %.2fs, speaker filtering disabled (enabled=%s, elevenlabs=%s, wakeword_audio=%s)",
+                        len(audio) / TARGET_RATE,
+                        self.settings.speaker_filter_enabled,
+                        self._whisper_model == "elevenlabs",
+                        self._wakeword_audio is not None)
+        
+        # Clear wake word audio for next interaction
+        self._wakeword_audio = None
 
         text = None
 
@@ -750,17 +904,29 @@ class Listener:
                 except Exception as exc:
                     logger.warning("[DEBUG] SDK commit failed: %s", exc)
 
-            text = self._el_final_text or self._current_transcript
-            logger.info("[DEBUG] SDK text='%s' (final='%s', partial='%s')", text, self._el_final_text, self._current_transcript)
+            # SDK doesn't support diarization, so if we have SDK text but need filtering,
+            # we'll need to re-transcribe with the REST API
+            sdk_text = self._el_final_text or self._current_transcript
+            logger.info("[DEBUG] SDK text='%s' (final='%s', partial='%s')", sdk_text, self._el_final_text, self._current_transcript)
             self._close_elevenlabs_ws()
 
-            if not text:
+            if use_speaker_filter:
+                # Always use REST API with diarization for speaker filtering
+                logger.info("[DEBUG] Using REST API with diarization for speaker filtering")
+                text = self._transcribe_elevenlabs(audio, use_diarization=True)
+                if not text and sdk_text:
+                    # Fall back to SDK text if diarization fails
+                    logger.warning("[DEBUG] Diarization failed, falling back to SDK text (unfiltered)")
+                    text = sdk_text
+            elif sdk_text:
+                text = sdk_text
+            else:
                 logger.info("[DEBUG] No SDK text, falling back to batch REST API")
-                text = self._transcribe_elevenlabs(audio)
+                text = self._transcribe_elevenlabs(audio, use_diarization=False)
         else:
             if self._whisper_model == "elevenlabs":
                 logger.info("[DEBUG] ElevenLabs SDK not connected, trying REST API")
-                text = self._transcribe_elevenlabs(audio)
+                text = self._transcribe_elevenlabs(audio, use_diarization=use_speaker_filter)
             if not text:
                 logger.info("[DEBUG] Using local whisper fallback")
                 text = self._transcribe_local(audio)

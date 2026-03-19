@@ -65,12 +65,21 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
 ### Voice Pipeline
 - **Always-on wake word detection** — "Hey Jarvis" via [openwakeword](https://github.com/dscripka/openWakeWord) (ONNX)
 - **Cloud speech-to-text** — ElevenLabs Scribe v2 Realtime via WebSocket streaming (~150ms latency), with local faster-whisper fallback
+- **Speaker-aware transcription (concurrent talk)** — when using ElevenLabs, the listener keeps a short rolling buffer of audio *before* the wake word, prepends it to the command clip, and calls Scribe with **diarization**. The model clusters audio into speakers (voice embeddings / acoustic similarity — not “frequency codes,” but learned features from the waveform). We keep only words tagged as the **first diarized speaker** (the person who said “Hey Jarvis” in that clip), so background chatter is less likely to pollute the command. Wake phrases are stripped from the final text before intent routing. Toggle with `SPEAKER_FILTER_ENABLED` (see Environment Variables).
 - **Live partial transcription** — words appear on the dashboard as you speak via realtime WebSocket partials
 - **ElevenLabs streaming TTS** — 192kbps MP3 via the `/stream` endpoint with `optimize_streaming_latency=3`
 - **Custom 11Labs sound effects** — wake word blip and thinking pulse generated with ElevenLabs SFX
 - **macOS system volume control** — "louder", "quieter", "set volume to X" control system output volume via osascript
-- **Spotify volume ducking** — music drops to 20% on wake, gradually restores after response
+- **Spotify volume ducking** — music ducks to **45%** on wake (usable floor on many setups), gradually restores after response
 - **Silent quick commands** — "skip", "pause", "resume" execute instantly with no voice response
+
+#### How speaker filtering avoids cross-talk
+
+1. **Rolling pre-wake buffer** — While idle, recent mic audio (~2s) is retained so the moment “Hey Jarvis” fires, we still have the tail of that phrase in PCM.
+2. **Single clip for STT** — Pre-wake audio + post-wake “command” audio are concatenated and sent to ElevenLabs **Speech-to-Text** with `diarize=true` and word-level timestamps.
+3. **Diarization** — The service segments the clip and assigns `speaker_0`, `speaker_1`, … based on **who sounds like whom** in that file (embedding-style clustering over short windows). The first labeled speaker in the response is treated as the wake-word speaker.
+4. **Filter + strip** — Only words from that speaker are kept; leading “Hey Jarvis” / “Jarvis” variants are removed so the brain never sees the wake phrase as a command.
+5. **Limits** — IDs are **per request**, not a permanent voice profile. Overlap, similar voices, or TTS playing through the same mic can still confuse diarization; disable filtering with `SPEAKER_FILTER_ENABLED=false` if needed.
 
 ### Multi-Agent AI System
 - **Supervisor-Worker architecture** — a Supervisor agent classifies intent into domains, then delegates to specialized sub-agents
@@ -293,6 +302,8 @@ See `.env.example` for all options. Key configuration:
 | `EMBEDDING_MODEL_ID` | Bedrock embedding model (default: `amazon.titan-embed-text-v1:0`) |
 | `SEMANTIC_MEMORY_ENABLED` | Enable/disable vector memory search (default: `true`) |
 | `SEMANTIC_MEMORY_TOP_K` | Number of similar turns to retrieve (default: `3`) |
+| `SPEAKER_FILTER_ENABLED` | When `true` (default), ElevenLabs STT uses diarization + first-speaker filter for the always-on listener |
+| `SPEAKER_FILTER_PRE_WAKEWORD_SECS` | Seconds of pre-wake-word audio to include for speaker anchoring (default: `1.5`) |
 
 ## API
 

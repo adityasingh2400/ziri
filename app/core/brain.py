@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterator
 from typing import Any
 
 import boto3
@@ -194,6 +195,16 @@ _VOLUME_DOWN_PHRASES = [
     "turn down the volume", "bit quieter", "a bit quieter", "not so loud",
 ]
 
+_VOLUME_MAX_PHRASES = [
+    "volume max", "max volume", "full volume", "volume full",
+    "turn it all the way up", "crank it to the max", "maximum volume",
+]
+
+_VOLUME_CALM_PHRASES = [
+    "volume calm", "calm volume", "quiet mode", "background volume",
+    "background music", "chill volume", "low volume",
+]
+
 _SHUFFLE_ON_PHRASES = [
     "shuffle", "shuffle on", "turn on shuffle", "mix it up",
     "randomize", "shuffle mode", "shuffle the music", "shuffle songs",
@@ -370,10 +381,14 @@ def deterministic_route(
     vol_match = _SET_VOLUME_RE.match(text)
     if vol_match:
         return _make_decision("spotify.set_volume", {"percent": int(vol_match.group(1))})
+    if _match_exact(text, _VOLUME_MAX_PHRASES):
+        return _make_decision("spotify.set_volume", {"percent": 100})
+    if _match_exact(text, _VOLUME_CALM_PHRASES):
+        return _make_decision("spotify.set_volume", {"percent": 35})
     if _match_exact(text, _VOLUME_UP_PHRASES):
-        return _make_decision("spotify.adjust_volume", {"delta_percent": 15})
+        return _make_decision("spotify.adjust_volume", {"delta_percent": 20})
     if _match_exact(text, _VOLUME_DOWN_PHRASES):
-        return _make_decision("spotify.adjust_volume", {"delta_percent": -15})
+        return _make_decision("spotify.adjust_volume", {"delta_percent": -20})
 
     for prefix in _SHUFFLE_PLAYLIST_PREFIXES:
         if text.startswith(prefix) and len(text) > len(prefix):
@@ -627,6 +642,44 @@ class Brain:
         except Exception as exc:
             logger.warning("Bedrock routing failed: %s", exc)
             return None
+
+    def general_answer_streaming(self, query: str, trace: Any = None) -> Iterator[str]:
+        """Stream a general answer for queries that don't match specific tools."""
+        if not self._bedrock:
+            logger.warning("No Bedrock client for streaming; using fallback")
+            yield "I am not sure how to answer that without a cloud connection."
+            return
+
+        system_prompt = (
+            "You are Ziri, an AI voice assistant running locally on a Mac. "
+            "Give brief, spoken-friendly answers to the user's questions. "
+            "Do not use markdown, emojis, or long lists. "
+            "Answer clearly and concisely."
+        )
+
+        try:
+            response = self._bedrock.converse_stream(
+                modelId=self.settings.bedrock_model_id,
+                system=[{"text": system_prompt}],
+                messages=[{"role": "user", "content": [{"text": query}]}],
+                inferenceConfig={"maxTokens": 400, "temperature": 0.5},
+            )
+
+            stream = response.get("stream")
+            if not stream:
+                yield "I encountered an error starting the response stream."
+                return
+
+            for event in stream:
+                if "contentBlockDelta" in event:
+                    delta = event["contentBlockDelta"].get("delta", {})
+                    text_chunk = delta.get("text")
+                    if text_chunk:
+                        yield text_chunk
+
+        except Exception as exc:
+            logger.error("Streaming bedrock error: %s", exc)
+            yield "I hit an error while trying to answer your question."
 
     def _parse_tool_use_response(self, response: dict[str, Any]) -> RouterDecision | None:
         content_blocks = response.get("output", {}).get("message", {}).get("content", [])

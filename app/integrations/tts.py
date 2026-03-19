@@ -115,6 +115,10 @@ class TTS:
         if self._polly:
             return self._polly_synthesize(text)
 
+        import sys
+        if sys.platform == "darwin":
+            return self._mac_say_synthesize(text)
+
         return None
 
     def _elevenlabs_generate(self, text: str, trace: Any = None) -> bytes | None:
@@ -193,9 +197,30 @@ class TTS:
             logger.warning("Polly TTS error: %s", exc)
             return None
 
+    def _mac_say_synthesize(self, text: str) -> str | None:
+        """Fallback to local macOS 'say' command."""
+        import subprocess
+        try:
+            filename = f"{uuid4().hex}.wav"
+            path = _AUDIO_DIR / filename
+            # Export as 24kHz standard WAV
+            subprocess.run(
+                ["say", "-v", "Samantha", "-o", str(path), "--data-format=LEI16@24000", text],
+                check=True,
+                capture_output=True,
+            )
+            self._cleanup_old_files()
+            return f"/static/audio/{filename}"
+        except Exception as exc:
+            logger.warning("Mac say TTS error: %s", exc)
+            return None
+
     @staticmethod
     def _cleanup_old_files(max_files: int = 50) -> None:
-        files = sorted(_AUDIO_DIR.glob("*.mp3"), key=lambda f: f.stat().st_mtime)
+        files = sorted(
+            [f for f in _AUDIO_DIR.glob("*") if f.suffix in (".mp3", ".wav")],
+            key=lambda f: f.stat().st_mtime
+        )
         while len(files) > max_files:
             files.pop(0).unlink(missing_ok=True)
 
@@ -223,7 +248,20 @@ class TTS:
             full_text = "".join(text_iter)
             if on_sentence:
                 on_sentence(full_text)
-            self.synthesize(full_text, trace=trace)
+            audio_url = self.synthesize(full_text, trace=trace)
+            
+            # Since this is the streaming route, the orchestrator tells the listener to skip audio playback.
+            # We must manually play it right here synchronously, as if we streamed it.
+            if audio_url:
+                local_path = _AUDIO_DIR / Path(audio_url).name
+                if local_path.exists():
+                    try:
+                        data, sr = sf.read(str(local_path), dtype="float32")
+                        sd.play(data, samplerate=sr)
+                        sd.wait()
+                    except Exception as exc:
+                        logger.warning("Fallback streaming playback error: %s", exc)
+                        
             return full_text
 
         return self._elevenlabs_streaming_pipeline(text_iter, trace=trace, on_sentence=on_sentence)
@@ -311,10 +349,16 @@ class TTS:
 
                         samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
                         if output_stream is None:
+                            try:
+                                import sounddevice as sd
+                                out_device = sd.query_devices(kind='output')['name']
+                            except Exception:
+                                out_device = None
                             output_stream = sd.OutputStream(
                                 samplerate=pcm_rate,
                                 channels=1,
                                 dtype="float32",
+                                device=out_device,
                             )
                             output_stream.start()
                         output_stream.write(samples.reshape(-1, 1))

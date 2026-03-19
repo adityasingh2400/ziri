@@ -21,4 +21,4 @@ start:
 	@echo "  Status:     http://localhost:8000/status"
 	@echo "  Metrics:    http://localhost:8000/metrics"
 	@(sleep 2 && open http://localhost:8000/listen) &
-	/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 run_listener.py
+	./.venv/bin/python run_listener.py --no-vision

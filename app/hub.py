@@ -5,15 +5,11 @@ from datetime import datetime, timezone
 
 from app import __version__
 from app.settings import Settings
-from app.core.agents.home_agent import HomeAgent
-from app.core.agents.info_agent import InfoAgent
-from app.core.agents.music_agent import MusicAgent
 from app.core.brain import Brain
 from app.core.device_registry import DeviceContext, DeviceRegistry
 from app.core.memory import InMemoryStore, MemoryStore, SupabaseMemoryStore
 from app.core.orchestrator import ZiriOrchestrator
 from app.core.search import ElasticsearchStore, HybridSearcher
-from app.core.supervisor import Supervisor
 from app.core.tool_runner import ToolRunner
 from app.core.tracing import get_langfuse
 from app.data.preferences_repository import (
@@ -96,32 +92,8 @@ class ZiriHub:
             if cached:
                 logger.info("Pre-cached %d TTS phrases", cached)
 
-        # Build multi-agent components
-        supervisor = Supervisor(
-            settings=settings,
-            memory=self.memory_store,
-            bedrock_client=self.brain._bedrock,
-        )
-
-        music_agent = MusicAgent(settings=settings, spotify=spotify)
-        music_agent.set_bedrock_client(self.brain._bedrock)
-
-        info_agent = InfoAgent(
-            settings=settings,
-            calendar=calendar,
-            weather=weather,
-            nba=nba,
-            news=news,
-        )
-        info_agent.set_bedrock_client(self.brain._bedrock, settings.bedrock_model_id)
-
-        home_agent = HomeAgent(
-            settings=settings,
-            home_scene=home_scene,
-            reminders=reminders,
-            phone_bridge=phone_bridge,
-        )
-        home_agent.set_bedrock_client(self.brain._bedrock)
+        # Eagerly initialise Langfuse so it's ready for first request
+        get_langfuse(settings)
 
         self.orchestrator = ZiriOrchestrator(
             settings=settings,
@@ -129,16 +101,7 @@ class ZiriHub:
             tool_runner=tool_runner,
             memory=self.memory_store,
             tts=tts,
-            supervisor=supervisor,
-            music_agent=music_agent,
-            info_agent=info_agent,
-            home_agent=home_agent,
-            hybrid_searcher=self.hybrid_searcher,
-            es_store=self.es_store,
         )
-
-        # Eagerly initialise Langfuse so it's ready for first request
-        get_langfuse(settings)
 
     def _build_es_store(self) -> ElasticsearchStore | None:
         if self.settings.elasticsearch_url:
@@ -275,7 +238,7 @@ class ZiriHub:
         degraded = not using_bedrock
         eleven_ok = bool(self.settings.elevenlabs_api_key)
         components = {
-            "router": "multi_agent_supervisor" if self.orchestrator.supervisor else ("bedrock" if using_bedrock else "heuristic_fallback"),
+            "router": "bedrock" if using_bedrock else "heuristic_fallback",
             "sessions": "supabase" if using_supabase else "in_memory",
             "memory": self.memory_store.__class__.__name__,
             "preferences": self.preferences_repository.__class__.__name__,

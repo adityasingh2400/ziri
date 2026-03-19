@@ -66,7 +66,11 @@ def play_chime(blocking: bool = False) -> None:
 def play_audio_file(path: str | Path, blocking: bool = True) -> None:
     """Play an MP3 or WAV file through the default output device."""
     data, sr = sf.read(str(path), dtype="float32")
-    sd.play(data, samplerate=sr)
+    try:
+        out_device = sd.query_devices(kind='output')['name']
+    except Exception:
+        out_device = None
+    sd.play(data, samplerate=sr, device=out_device)
     if blocking:
         sd.wait()
 
@@ -109,7 +113,11 @@ def start_thinking_sound() -> None:
 
     def _loop():
         while not _thinking_stop.is_set():
-            sd.play(data, samplerate=sr)
+            try:
+                out_device = sd.query_devices(kind='output')['name']
+            except Exception:
+                out_device = None
+            sd.play(data, samplerate=sr, device=out_device)
             sd.wait()
 
     _thinking_thread = threading.Thread(target=_loop, daemon=True, name="ziri-thinking")
@@ -134,7 +142,11 @@ def stop_thinking_sound() -> None:
 def play_audio_bytes(audio_bytes: bytes, blocking: bool = True) -> None:
     """Play raw MP3/WAV bytes through the default output device."""
     data, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32")
-    sd.play(data, samplerate=sr)
+    try:
+        out_device = sd.query_devices(kind='output')['name']
+    except Exception:
+        out_device = None
+    sd.play(data, samplerate=sr, device=out_device)
     if blocking:
         sd.wait()
 

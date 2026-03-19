@@ -2,7 +2,7 @@
 {"input": "pause", "expected_tool": "spotify.pause", "expected_args": {}}
 {"input": "skip", "expected_tool": "spotify.skip", "expected_args": {}}
 {"input": "next song", "expected_tool": "spotify.skip", "expected_args": {}}
-{"input": "volume up", "expected_tool": "spotify.adjust_volume", "expected_args": {"delta_percent": 15}}
+{"input": "volume up", "expected_tool": "spotify.adjust_volume", "expected_args": {"delta_percent": 20}}
 {"input": "set volume to 50", "expected_tool": "spotify.set_volume", "expected_args": {"percent": 50}}
 {"input": "shuffle on", "expected_tool": "spotify.shuffle", "expected_args": {"state": true}}
 {"input": "what's playing", "expected_tool": "spotify.current_track", "expected_args": {}}
