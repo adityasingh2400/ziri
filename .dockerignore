@@ -17,7 +17,7 @@ build
 docs
 *.md
 !README.md
-com.ziri.listener.plist
+scripts/macos/*.plist
 app/static/audio/*.mp3
 app/static/audio/cached/*.mp3
 k8s

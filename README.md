@@ -338,6 +338,16 @@ Connection status for Spotify, Bedrock, TTS, and memory store.
 
 ## Project Structure
 
+**Repository root** (config + entrypoints only):
+
+| Path | Role |
+|------|------|
+| `Makefile` | Local dev targets (`make start`, tests, lint) |
+| `pyproject.toml` / `requirements.txt` | Python tooling + dependencies |
+| `run_listener.py` | Entry: FastAPI + always-on listener |
+| `docker-compose.yml`, `Dockerfile` | Container orchestration |
+| `README.md`, `.env.example` | Docs and env template |
+
 ```
 app/
 ├── main.py                        # FastAPI app, routes, middleware, /metrics
@@ -346,27 +356,23 @@ app/
 ├── settings.py                    # Pydantic settings (env-driven)
 ├── schemas.py                     # Request/response models
 ├── core/
-│   ├── orchestrator.py            # LangGraph pipeline (supervisor → agents → respond)
-│   ├── supervisor.py              # Supervisor agent (deterministic + Bedrock domain classifier)
-│   ├── brain.py                   # Bedrock Claude router + deterministic fast path
-│   ├── tool_runner.py             # Legacy tool dispatcher (used by quick_action path)
-│   ├── tracing.py                 # Langfuse observability (traces, generations, spans)
-│   ├── metrics.py                 # Prometheus metrics (histograms, counters)
-│   ├── search.py                  # Elasticsearch + Hybrid RRF search
+│   ├── orchestrator.py            # LangGraph pipeline
+│   ├── brain.py                   # Bedrock router + deterministic fast path
+│   ├── tool_runner.py             # Tool dispatcher (Spotify, home, etc.)
+│   ├── tracing.py                 # Langfuse observability
+│   ├── metrics.py                 # Prometheus metrics
+│   ├── search.py                  # Elasticsearch + hybrid RRF search
 │   ├── embeddings.py              # Amazon Titan embedding wrapper
 │   ├── memory.py                  # Conversational memory (in-memory + Supabase + pgvector)
 │   ├── personality.py             # Quick replies, response rewriting
-│   ├── listener.py                # Always-on wake word + ElevenLabs Scribe STT + playback
-│   ├── audio_player.py            # sounddevice playback + 11Labs sound effects
+│   ├── listener.py                # Always-on wake word + STT + playback
+│   ├── audio_player.py            # sounddevice playback + sound effects
 │   ├── device_registry.py         # Device → room → speaker resolution
-│   └── agents/
-│       ├── music_agent.py         # Music domain ReAct sub-agent (14 Spotify tools)
-│       ├── info_agent.py          # Info domain ReAct sub-agent (weather, NBA, news, etc.)
-│       └── home_agent.py          # Home domain ReAct sub-agent (scenes, reminders, phone)
+│   └── vision.py                  # Optional gesture / vision hooks
 ├── integrations/
-│   ├── tts.py                     # ElevenLabs streaming TTS + Polly fallback + TTFB tracking
-│   ├── spotify_controller.py      # Spotify Web API (search, playback, volume)
-│   └── ...                        # calendar, weather, nba, news, reminders, scenes, phone
+│   ├── tts.py                     # ElevenLabs TTS + Polly fallback
+│   ├── spotify_controller.py      # Spotify Web API (search, playback, ducking)
+│   └── …                          # calendar, weather, nba, news, reminders, scenes, phone
 ├── static/
 │   └── listen.html                # WebGL fluid dashboard
 ├── config/
@@ -385,8 +391,8 @@ k8s/
 ├── namespace.yaml                 # ziri namespace
 ├── configmap.yaml                 # Non-secret environment config
 ├── secret.yaml                    # API key template
-├── api/                           # API Deployment (2 replicas) + NodePort Service
-├── worker/                        # Worker Deployment + ClusterIP Service
+├── api/                           # API Deployment + Service
+├── worker/                        # Worker Deployment + Service
 ├── postgres/                      # PostgreSQL StatefulSet + PVC + init SQL
 ├── prometheus/                    # Prometheus Deployment + scrape config
 └── elasticsearch/                 # Elasticsearch single-node Deployment
@@ -397,25 +403,32 @@ sql/
 └── 003_fulltext_index.sql         # Optional tsvector GIN index for Postgres keyword search
 
 scripts/
-├── eval_tool_routing.py           # Offline routing accuracy evaluation (25 test cases)
-└── kind-setup.sh                  # Create kind cluster, build images, apply manifests
+├── eval_tool_routing.py           # Offline routing accuracy evaluation
+├── kind-setup.sh                  # kind cluster + images + manifests
+└── macos/
+    ├── README.md                  # LaunchAgent install notes
+    └── com.ziri.listener.plist    # launchd template (edit paths before use)
 
 tests/
 ├── conftest.py                    # Shared fixtures (settings, memory, mocks)
 ├── test_brain.py                  # Brain unit tests
-├── test_deterministic_routing.py  # Parametrized tests for all 200+ phrase patterns
-├── test_supervisor.py             # Supervisor classification + domain routing tests
-├── test_orchestrator.py           # LangGraph graph construction + node execution tests
-├── test_memory.py                 # InMemoryStore CRUD, isolation, eviction tests
-├── test_personality.py            # Quick reply pool + passthrough tests
+├── test_deterministic_routing.py  # Parametrized routing phrase tests
+├── test_orchestrator.py           # LangGraph graph tests
+├── test_memory.py                 # InMemoryStore CRUD, isolation, eviction
+├── test_personality.py            # Quick reply pool + passthrough
 ├── test_api.py                    # API endpoint tests
-├── test_intent_behaviors.py       # Integration tests via FastAPI TestClient
+├── test_intent_behaviors.py       # Integration tests via TestClient
+├── test_streaming_pipeline.py     # Streaming / pipeline tests
+├── test_vision.py                 # Vision / gesture tests
+├── test_spotify_skip_next.py      # Spotify skip behavior
 └── fixtures/
-    └── routing_eval.jsonl         # 25 evaluation test cases
+    ├── routing_eval.jsonl         # Routing evaluation cases
+    └── audio/
+        └── sample.aiff            # Sample media (local experiments)
 
 .github/
 └── workflows/
-    └── ci.yml                     # CI pipeline: lint (ruff) → test (pytest) → build (Docker)
+    └── ci.yml                     # CI: lint (ruff) → test (pytest) → build (Docker)
 ```
 
 ## Roadmap
