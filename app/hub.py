@@ -101,6 +101,8 @@ class ZiriHub:
             tool_runner=tool_runner,
             memory=self.memory_store,
             tts=tts,
+            hybrid_searcher=self.hybrid_searcher,
+            es_store=self.es_store,
         )
 
     def _build_es_store(self) -> ElasticsearchStore | None:

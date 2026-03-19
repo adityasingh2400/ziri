@@ -40,6 +40,8 @@ MAX_RETRIES = 5
 RETRY_DELAY = 3.0
 MAX_HISTORY = 50
 PRE_WAKEWORD_BUFFER_SECS = 2.0  # rolling buffer of audio before wake word
+# Mic callback uses ~30ms blocks → this many samples per chunk after downsampling to TARGET_RATE
+_DS_MIC_CHUNK_SAMPLES = max(1, int(TARGET_RATE * 0.03))
 
 # --------------- Silero VAD tuning ---------------
 VAD_THRESHOLD = 0.40            # prob above which a 32ms chunk is "speech"
@@ -121,11 +123,11 @@ class Listener:
         self._followup_audio_armed: bool = True
         self.history: collections.deque[InteractionRecord] = collections.deque(maxlen=MAX_HISTORY)
         
-        # Rolling buffer of pre-wake-word audio for speaker identification
+        # Rolling buffer of pre-wake-word audio for speaker identification.
+        # maxlen must count ~30ms downsampled chunks (not 80ms wakeword frames).
         pre_ww_samples = int(PRE_WAKEWORD_BUFFER_SECS * TARGET_RATE)
-        self._pre_wakeword_buffer: collections.deque[np.ndarray] = collections.deque(
-            maxlen=pre_ww_samples // WAKEWORD_CHUNK + 10
-        )
+        max_chunks = (pre_ww_samples + _DS_MIC_CHUNK_SAMPLES - 1) // _DS_MIC_CHUNK_SAMPLES + 5
+        self._pre_wakeword_buffer: collections.deque[np.ndarray] = collections.deque(maxlen=max_chunks)
         self._wakeword_audio: np.ndarray | None = None  # captured at wake word trigger
         # Copy of last wake-word mic clip: diarization "who is the user" anchor for follow-up
         # utterances (no new wake). This is acoustic speaker match — not ElevenLabs TTS voice_id.
@@ -1079,6 +1081,10 @@ class Listener:
             if not text:
                 logger.info("[DEBUG] Using local whisper fallback")
                 text = self._transcribe_local(audio)
+
+        # Combined anchor+command clip: EL paths strip wake; local Whisper does not.
+        if text and use_speaker_filter:
+            text = self._strip_wake_phrase(text)
 
         if not text or self._is_hallucination(text):
             logger.info("[DEBUG] Empty or hallucinated transcript ('%s'), returning to idle", text)

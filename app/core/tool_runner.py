@@ -60,14 +60,19 @@ def _set_spotify_volume(percent: int) -> ToolResult:
 
 
 def _adjust_spotify_volume(delta: int) -> ToolResult:
-    """Raise or lower Spotify app volume by a delta, with a floor at 40%."""
+    """Raise or lower Spotify app volume by a delta.
+
+    Soft floor at 40% only when volume was already there or above — never boost
+    upward because the user set a lower level (e.g. 35%) and said "quieter".
+    """
     try:
         current = _get_spotify_volume()
-        new_vol = current + delta
         if delta < 0:
-            new_vol = max(_SPOTIFY_VOLUME_FLOOR, new_vol)
+            new_vol = max(0, current + delta)
+            if current >= _SPOTIFY_VOLUME_FLOOR:
+                new_vol = max(_SPOTIFY_VOLUME_FLOOR, new_vol)
         else:
-            new_vol = min(100, new_vol)
+            new_vol = min(100, current + delta)
         subprocess.run(
             ["osascript", "-e", f'tell application "Spotify" to set sound volume to {new_vol}'],
             capture_output=True, timeout=3, check=True,
