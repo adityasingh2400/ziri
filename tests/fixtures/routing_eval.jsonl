@@ -10,6 +10,7 @@
 {"input": "queue Bohemian Rhapsody", "expected_tool": "spotify.queue", "expected_args": {"query": "Bohemian Rhapsody"}}
 {"input": "play artist Taylor Swift", "expected_tool": "spotify.play_artist", "expected_args": {"query": "Taylor Swift"}}
 {"input": "play playlist chill vibes", "expected_tool": "spotify.play_playlist", "expected_args": {"query": "chill vibes"}}
+{"input": "yeah, could you shuffle my playlist exotic melodies", "expected_tool": "spotify.play_playlist", "expected_args": {"query": "exotic melodies", "shuffle": true}}
 {"input": "what's the weather", "expected_tool": "weather.current", "expected_args": {}}
 {"input": "when is sunset", "expected_tool": "weather.sunrise_sunset", "expected_args": {}}
 {"input": "nba scores", "expected_tool": "nba.scores", "expected_args": {}}

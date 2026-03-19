@@ -77,13 +77,24 @@ class Settings(BaseSettings):
 
     # Always-on listener
     wake_word_model: str = "hey_jarvis"
-    wake_word_threshold: float = 0.5
+    # 0.5 is very sensitive (music/TV often spikes 0.6–0.9). Prefer ~0.8+; tune via .env.
+    wake_word_threshold: float = 0.82
+    # Require this many consecutive openWakeWord frames (80ms each) above threshold.
+    wake_word_consecutive_chunks: int = 2
+    # Ignore new wake detections for this long after a successful trigger (reduces double-fires).
+    wake_word_cooldown_secs: float = 2.5
     whisper_model: str = "base.en"
     listener_device_id: str = "Mac_Listener"
     listener_room: str = "Office"
     listener_user_id: str = "Aditya"
     listener_chime_enabled: bool = True
-    
+    # After MUSIC_SKIP_NO_NEXT, listen for a follow-up without saying the wake word again
+    listener_followup_listen_secs: float = 8.0
+    # Ignore mic audio this long after TTS ends (reduces assistant echo in the transcript)
+    listener_followup_mic_dead_air_secs: float = 1.35
+    # Follow-up: skip diarization filter so the whole phrase isn't dropped across speaker clusters
+    listener_followup_skip_speaker_filter: bool = True
+
     # Speaker filtering: only transcribe the person who said the wake word
     speaker_filter_enabled: bool = True
     speaker_filter_pre_wakeword_secs: float = 1.5  # seconds of audio before wake word to capture

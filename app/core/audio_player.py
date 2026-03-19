@@ -17,6 +17,25 @@ _AUDIO_ROOT = Path(__file__).resolve().parent.parent / "static" / "audio"
 
 _MIN_CHIME_VOLUME = 0.85
 
+# New `sd.play()` calls open a fresh output stream; CoreAudio/PortAudio often apply a
+# short fade-in on stream start. A few ms of silence absorbs that so the first syllable
+# isn't audibly ducked or "chopped".
+DEFAULT_TTS_OUTPUT_LEAD_IN_SECS = 0.05
+
+
+def _pad_output_lead_in(data: np.ndarray, samplerate: int, lead_in_secs: float) -> np.ndarray:
+    """Prepend silence so OS/DAC stream startup ramp hits silence, not speech."""
+    if lead_in_secs <= 0:
+        return data
+    n = int(round(float(lead_in_secs) * samplerate))
+    if n <= 0:
+        return data
+    if data.ndim == 1:
+        pad = np.zeros(n, dtype=np.float32)
+    else:
+        pad = np.zeros((n, data.shape[1]), dtype=np.float32)
+    return np.concatenate([pad, data.astype(np.float32, copy=False)], axis=0)
+
 
 # ---- Wake word chime ----
 
@@ -63,9 +82,15 @@ def play_chime(blocking: bool = False) -> None:
 
 # ---- General playback ----
 
-def play_audio_file(path: str | Path, blocking: bool = True) -> None:
+def play_audio_file(
+    path: str | Path,
+    blocking: bool = True,
+    *,
+    output_lead_in_secs: float = 0.0,
+) -> None:
     """Play an MP3 or WAV file through the default output device."""
     data, sr = sf.read(str(path), dtype="float32")
+    data = _pad_output_lead_in(data, sr, output_lead_in_secs)
     try:
         out_device = sd.query_devices(kind='output')['name']
     except Exception:
@@ -139,9 +164,15 @@ def stop_thinking_sound() -> None:
 
 # ---- Utility playback ----
 
-def play_audio_bytes(audio_bytes: bytes, blocking: bool = True) -> None:
+def play_audio_bytes(
+    audio_bytes: bytes,
+    blocking: bool = True,
+    *,
+    output_lead_in_secs: float = 0.0,
+) -> None:
     """Play raw MP3/WAV bytes through the default output device."""
     data, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32")
+    data = _pad_output_lead_in(data, sr, output_lead_in_secs)
     try:
         out_device = sd.query_devices(kind='output')['name']
     except Exception:

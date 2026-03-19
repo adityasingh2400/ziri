@@ -265,6 +265,25 @@ _SET_VOLUME_RE = re.compile(
     r"^(?:set |turn )?volume (?:to |at )?(\d+)(?:\s*%| percent)?$"
 )
 
+# Whole word "play" — substring must NOT match inside "playlist", "playing", etc.
+_PLAY_AS_WORD_RE = re.compile(r"\bplay\b")
+
+# "… shuffle my playlist Exotic Melodies" (works after "yeah, could you …")
+_SHUFFLE_PLAYLIST_INLINE_RE = re.compile(
+    r"\bshuffle\s+(?:my\s+|the\s+)?playlist\s+(.+)$"
+)
+_PLAY_PLAYLIST_INLINE_RE = re.compile(
+    r"\bplay\s+(?:my\s+|the\s+)?playlist\s+(.+)$"
+)
+
+# Listener follow-up after MUSIC_SKIP_NO_NEXT — don't treat bare confirmations as playlist names
+_SKIP_DEAD_END_PLAYLIST_HINT_DENY = frozenset({
+    "no", "nope", "nah", "never mind", "nevermind", "cancel", "thanks", "thank you",
+})
+_SKIP_DEAD_END_ONEWORD_AMBIGUOUS = frozenset({
+    "yeah", "yes", "yep", "ok", "okay", "sure", "uh", "um",
+})
+
 # Non-music deterministic routes
 _CALENDAR_PHRASES = [
     "calendar", "meeting", "meetings", "schedule", "events today",
@@ -355,7 +374,10 @@ def _make_decision(tool_name: str, tool_args: dict[str, Any], confidence: float 
 
 
 def deterministic_route(
-    raw_text: str, last_music_context: dict[str, Any] | None = None,
+    raw_text: str,
+    last_music_context: dict[str, Any] | None = None,
+    *,
+    listener_route_hint: str = "",
 ) -> RouterDecision | None:
     """Module-level deterministic phrase matcher, usable without a Brain instance."""
     last_music_context = last_music_context or {}
@@ -394,10 +416,38 @@ def deterministic_route(
         if text.startswith(prefix) and len(text) > len(prefix):
             query = raw_text[len(prefix):].strip()
             return _make_decision("spotify.play_playlist", {"query": query, "shuffle": True})
+    m_sh_pl = _SHUFFLE_PLAYLIST_INLINE_RE.search(text)
+    if m_sh_pl:
+        query = m_sh_pl.group(1).strip().rstrip("?.!,")
+        if query:
+            return _make_decision("spotify.play_playlist", {"query": query, "shuffle": True})
     for prefix in _SHUFFLE_ARTIST_PREFIXES:
         if text.startswith(prefix) and len(text) > len(prefix):
             query = raw_text[len(prefix):].strip()
             return _make_decision("spotify.play_artist", {"query": query, "shuffle": True})
+    # Echo + filler before the real command (e.g. follow-up STT) — use last occurrence.
+    for needle in ("shuffle songs by ", "shuffle music by ", "shuffle tracks by "):
+        idx = text.rfind(needle)
+        if idx >= 0:
+            query = raw_text[idx + len(needle):].strip().rstrip("?.!,")
+            if query:
+                return _make_decision("spotify.play_artist", {"query": query, "shuffle": True})
+
+    # One-shot hint from listener: user answered Jarvis's "shuffle a playlist?" after dead-end skip.
+    if listener_route_hint == "after_skip_no_next":
+        t = raw_text.strip().rstrip("?.!,")
+        low = t.lower()
+        if t and len(t) <= 80:
+            if low in _SKIP_DEAD_END_PLAYLIST_HINT_DENY:
+                return None
+            if len(low.split()) == 1 and low in _SKIP_DEAD_END_ONEWORD_AMBIGUOUS:
+                return None
+            if _PLAY_AS_WORD_RE.search(low):
+                pass
+            elif "shuffle" in low or "playlist" in low:
+                pass
+            else:
+                return _make_decision("spotify.play_playlist", {"query": t, "shuffle": True})
 
     if _match_exact(text, _SHUFFLE_OFF_PHRASES):
         return _make_decision("spotify.shuffle", {"state": False})
@@ -419,6 +469,11 @@ def deterministic_route(
     for prefix in _PLAY_PLAYLIST_PREFIXES:
         if text.startswith(prefix) and len(text) > len(prefix):
             query = raw_text[len(prefix):].strip()
+            return _make_decision("spotify.play_playlist", {"query": query})
+    m_pl = _PLAY_PLAYLIST_INLINE_RE.search(text)
+    if m_pl:
+        query = m_pl.group(1).strip().rstrip("?.!,")
+        if query:
             return _make_decision("spotify.play_playlist", {"query": query})
     for prefix in _PLAY_ARTIST_PREFIXES:
         if text.startswith(prefix) and len(text) > len(prefix):
@@ -497,7 +552,8 @@ def deterministic_route(
     if text.startswith("play ") and len(text) > 5:
         query = raw_text[5:].strip() or "top tracks"
         return _make_decision("spotify.play_query", {"query": query})
-    if "play" in text or "spotify" in text:
+    # Do not use `"play" in text` — it matches inside "playlist".
+    if _PLAY_AS_WORD_RE.search(text) or "spotify" in text:
         return _make_decision("spotify.play_query", {"query": raw_text})
 
     return None
@@ -580,7 +636,11 @@ class Brain:
     def _deterministic_route(
         self, req: IntentRequest, last_music_context: dict[str, Any]
     ) -> RouterDecision | None:
-        return deterministic_route(req.raw_text, last_music_context)
+        return deterministic_route(
+            req.raw_text,
+            last_music_context,
+            listener_route_hint=getattr(req, "listener_route_hint", "") or "",
+        )
 
     @staticmethod
     def _match_exact(text: str, phrases: list[str]) -> bool:

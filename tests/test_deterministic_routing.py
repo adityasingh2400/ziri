@@ -276,6 +276,67 @@ def test_prefix_music_routes(text: str, expected_tool: str, expected_query: str)
     assert d.tool_args["query"] == expected_query
 
 
+def test_after_skip_dead_end_hint_maps_bare_playlist_name() -> None:
+    d = deterministic_route(
+        "exotic melodies",
+        {},
+        listener_route_hint="after_skip_no_next",
+    )
+    assert d is not None
+    assert d.tool_name == "spotify.play_playlist"
+    assert d.tool_args["query"] == "exotic melodies"
+    assert d.tool_args.get("shuffle") is True
+
+
+def test_after_skip_hint_ignores_one_word_yeah() -> None:
+    assert deterministic_route(
+        "yeah",
+        {},
+        listener_route_hint="after_skip_no_next",
+    ) is None
+
+
+def test_shuffle_artist_after_assistant_echo_in_transcript() -> None:
+    """Follow-up STT may include TTS bleed; match the user's trailing shuffle request."""
+    blob = (
+        "There wasn't another track lined up after that one, so Spotify paused. "
+        "Want me to play more from Lou Val or shuffle one of your playlists? "
+        "Yeah, shuffle songs by Lou Val"
+    )
+    d = deterministic_route(blob)
+    assert d is not None
+    assert d.tool_name == "spotify.play_artist"
+    assert d.tool_args.get("shuffle") is True
+    assert "Lou Val" in d.tool_args["query"]
+
+
+def test_shuffle_playlist_inline_after_filler_phrase() -> None:
+    """'playlist' contains substring 'play' — must not route to play_query."""
+    d = deterministic_route(
+        "Yeah, could you shuffle my playlist exotic melodies?",
+    )
+    assert d is not None
+    assert d.tool_name == "spotify.play_playlist"
+    assert d.tool_args["query"].lower() == "exotic melodies"
+    assert d.tool_args.get("shuffle") is True
+
+
+def test_playlist_request_not_play_query_catchall() -> None:
+    d = deterministic_route("shuffle the playlist workout mix")
+    assert d is not None
+    assert d.tool_name == "spotify.play_playlist"
+    assert d.tool_args["query"] == "workout mix"
+    assert d.tool_args.get("shuffle") is True
+
+
+def test_play_my_playlist_inline() -> None:
+    d = deterministic_route("hey could you play my playlist focus")
+    assert d is not None
+    assert d.tool_name == "spotify.play_playlist"
+    assert d.tool_args["query"] == "focus"
+    assert not d.tool_args.get("shuffle")
+
+
 # ── Catch-all "play X" ──────────────────────────────────────────────────
 
 def test_play_catchall() -> None:

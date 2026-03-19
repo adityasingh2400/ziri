@@ -6,6 +6,7 @@ State machine:
     Transcribing  -->  (transcript ready)  -->  Processing
     Processing  -->  (audio response)  -->  Speaking
     Speaking  -->  (playback done)  -->  Idle
+    Speaking  -->  (MUSIC_SKIP_NO_NEXT)  -->  FollowupListening  -->  ... same as Listening ...  -->  Idle
 
 End-of-speech uses Silero VAD (ONNX) for robust utterance boundary
 detection that works in noisy rooms with background chatter.
@@ -87,6 +88,7 @@ def _downsample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
 class State(enum.Enum):
     IDLE = "idle"
     LISTENING = "listening"
+    FOLLOWUP_LISTENING = "followup_listening"
     TRANSCRIBING = "transcribing"
     PROCESSING = "processing"
     SPEAKING = "speaking"
@@ -114,6 +116,9 @@ class Listener:
         self._current_response: str = ""
         self._last_active_ts: float = 0
         self._last_partial_ts: float = 0
+        self._followup_deadline: float = 0.0
+        self._followup_discard_audio_until: float = 0.0
+        self._followup_audio_armed: bool = True
         self.history: collections.deque[InteractionRecord] = collections.deque(maxlen=MAX_HISTORY)
         
         # Rolling buffer of pre-wake-word audio for speaker identification
@@ -122,6 +127,14 @@ class Listener:
             maxlen=pre_ww_samples // WAKEWORD_CHUNK + 10
         )
         self._wakeword_audio: np.ndarray | None = None  # captured at wake word trigger
+        # Copy of last wake-word mic clip: diarization "who is the user" anchor for follow-up
+        # utterances (no new wake). This is acoustic speaker match — not ElevenLabs TTS voice_id.
+        self._session_speaker_anchor: np.ndarray | None = None
+        self._utterance_is_followup: bool = False
+        self._followup_route_hint: str = ""
+        # Reduce false wakes: require consecutive high scores + cooldown after a real trigger
+        self._wakeword_hit_streak: int = 0
+        self._wake_last_fire_monotonic: float = 0.0
 
     # ------------------------------------------------------------------
     # Model loaders
@@ -270,7 +283,32 @@ class Listener:
                                 ww_buffer = ww_buffer[WAKEWORD_CHUNK:]
                                 self._check_wakeword(frame)
 
-                        elif self.state == State.LISTENING:
+                        elif self.state in (State.LISTENING, State.FOLLOWUP_LISTENING):
+                            # Drop mic input briefly after follow-up TTS so we don't transcribe speaker bleed.
+                            if self.state == State.FOLLOWUP_LISTENING and not self._followup_audio_armed:
+                                now_arm = time.monotonic()
+                                if now_arm < self._followup_discard_audio_until:
+                                    continue
+                                self._followup_audio_armed = True
+                                self._listen_start = now_arm
+                                self._followup_deadline = now_arm + max(
+                                    3.0, float(self.settings.listener_followup_listen_secs)
+                                )
+                                self._capture_frames = []
+                                self._current_transcript = ""
+                                self._el_final_text = ""
+                                self._partial_busy = False
+                                self._vad_speech_started = False
+                                self._vad_speech_chunks = 0
+                                self._vad_silence_start = None
+                                vad_buffer = np.zeros(0, dtype=np.int16)
+                                if self._vad_model is not None:
+                                    self._vad_model.reset_states()
+                                logger.info(
+                                    "[DEBUG] Follow-up mic armed after %.2fs dead air",
+                                    float(self.settings.listener_followup_mic_dead_air_secs),
+                                )
+
                             self._capture_frames.append(chunk)
                             if self._whisper_model == "elevenlabs":
                                 self._send_audio_to_elevenlabs(chunk)
@@ -282,7 +320,7 @@ class Listener:
                                 vad_frame = vad_buffer[:VAD_CHUNK]
                                 vad_buffer = vad_buffer[VAD_CHUNK:]
                                 self._vad_step(vad_frame)
-                                if self.state != State.LISTENING:
+                                if self.state not in (State.LISTENING, State.FOLLOWUP_LISTENING):
                                     vad_buffer = np.zeros(0, dtype=np.int16)
                                     break
 
@@ -324,29 +362,57 @@ class Listener:
     # ------------------------------------------------------------------
 
     def _check_wakeword(self, frame: np.ndarray) -> None:
+        now = time.monotonic()
+        cd = float(self.settings.wake_word_cooldown_secs)
+        if cd > 0 and (now - self._wake_last_fire_monotonic) < cd:
+            self._wakeword_hit_streak = 0
+            return
+
         prediction = self._wakeword_model.predict(frame)
-        for mdl_name, score in prediction.items():
-            if score >= self.settings.wake_word_threshold:
-                logger.info("Wake word detected! (%s, score=%.2f)", mdl_name, score)
-                self._wakeword_model.reset()
-                self._wake_count += 1
-                
-                # Capture pre-wake-word audio for speaker identification
-                if self._pre_wakeword_buffer:
-                    pre_ww_secs = self.settings.speaker_filter_pre_wakeword_secs
-                    samples_needed = int(pre_ww_secs * TARGET_RATE)
-                    pre_ww_audio = np.concatenate(list(self._pre_wakeword_buffer))
-                    # Take the last N seconds
-                    self._wakeword_audio = pre_ww_audio[-samples_needed:] if len(pre_ww_audio) > samples_needed else pre_ww_audio
-                    logger.info("Captured %.2fs of pre-wake-word audio for speaker ID", len(self._wakeword_audio) / TARGET_RATE)
-                else:
-                    self._wakeword_audio = None
-                
-                self._transition_to_listening()
+        best_name, best_score = max(prediction.items(), key=lambda kv: kv[1])
+        threshold = float(self.settings.wake_word_threshold)
+        need = max(1, int(self.settings.wake_word_consecutive_chunks))
+
+        if best_score >= threshold:
+            self._wakeword_hit_streak += 1
+            if self._wakeword_hit_streak < need:
                 return
+            self._wakeword_hit_streak = 0
+            self._wake_last_fire_monotonic = now
+            logger.info(
+                "Wake word detected! (%s, score=%.2f, consecutive_frames=%d)",
+                best_name,
+                best_score,
+                need,
+            )
+            self._wakeword_model.reset()
+            self._wake_count += 1
+
+            # Capture pre-wake-word audio for speaker identification
+            if self._pre_wakeword_buffer:
+                pre_ww_secs = self.settings.speaker_filter_pre_wakeword_secs
+                samples_needed = int(pre_ww_secs * TARGET_RATE)
+                pre_ww_audio = np.concatenate(list(self._pre_wakeword_buffer))
+                # Take the last N seconds
+                self._wakeword_audio = (
+                    pre_ww_audio[-samples_needed:] if len(pre_ww_audio) > samples_needed else pre_ww_audio
+                )
+                logger.info(
+                    "Captured %.2fs of pre-wake-word audio for speaker ID",
+                    len(self._wakeword_audio) / TARGET_RATE,
+                )
+            else:
+                self._wakeword_audio = None
+
+            self._transition_to_listening()
+            return
+
+        self._wakeword_hit_streak = 0
 
     def _transition_to_listening(self) -> None:
         self.state = State.LISTENING
+        self._utterance_is_followup = False
+        self._followup_route_hint = ""
         logger.info("[DEBUG] === STATE -> LISTENING ===")
         self._capture_frames: list[np.ndarray] = []
         self._listen_start = time.monotonic()
@@ -381,6 +447,51 @@ class Listener:
 
         # Chime disabled — sd.play() opens an OutputStream that conflicts with
         # the Bluetooth mic InputStream, killing audio capture for ~3 seconds.
+
+    def _transition_to_followup_listening(self) -> None:
+        """Listen for a follow-up command without requiring the wake word (e.g. after MUSIC_SKIP_NO_NEXT)."""
+        self.state = State.FOLLOWUP_LISTENING
+        self._utterance_is_followup = True
+        self._followup_route_hint = "after_skip_no_next"
+        secs = max(3.0, float(self.settings.listener_followup_listen_secs))
+        dead = max(0.0, float(self.settings.listener_followup_mic_dead_air_secs))
+        self._followup_discard_audio_until = time.monotonic() + dead
+        self._followup_audio_armed = False
+        # Deadline for "no speech" is set when mic arms (after dead air).
+        self._followup_deadline = float("inf")
+        logger.info(
+            "[DEBUG] === STATE -> FOLLOWUP_LISTENING === (%.1fs window after %.2fs dead air, no wake word)",
+            secs,
+            dead,
+        )
+        self._capture_frames = []
+        self._listen_start = time.monotonic()
+        self._current_transcript = ""
+        self._current_response = ""
+        self._last_active_ts = time.time()
+        self._last_partial_ts = time.monotonic()
+        self._partial_busy = False
+        self._el_chunks_sent = 0
+        self._el_chunks_backlogged = 0
+
+        self._vad_speech_started = False
+        self._vad_speech_chunks = 0
+        self._vad_silence_start: float | None = None
+        if self._vad_model is not None:
+            self._vad_model.reset_states()
+
+        self._el_ws = None
+        self._el_final_text = ""
+        self._el_session_ready = False
+        self._el_audio_backlog = []
+
+        # Spotify should still be ducked from the prior wake interaction; do not unduck.
+
+        if self._whisper_model == "elevenlabs":
+            logger.info("[DEBUG] Starting ElevenLabs WS thread (follow-up listen)...")
+            import threading
+
+            threading.Thread(target=self._start_elevenlabs_ws, daemon=True).start()
 
     # ------------------------------------------------------------------
     # ElevenLabs Realtime STT (official SDK)
@@ -457,7 +568,11 @@ class Listener:
                 connection.on(RealtimeEvents.ERROR, on_error)
                 connection.on(RealtimeEvents.CLOSE, on_close)
 
-                while self.state in (State.LISTENING, State.TRANSCRIBING) and self._running:
+                while (
+                    self.state
+                    in (State.LISTENING, State.FOLLOWUP_LISTENING, State.TRANSCRIBING)
+                    and self._running
+                ):
                     await asyncio.sleep(0.05)
 
             try:
@@ -604,12 +719,21 @@ class Listener:
         is_speech = prob >= VAD_THRESHOLD
 
         if not self._vad_speech_started:
-            # --- WAITING: no speech yet after wake word ---
+            # --- WAITING: no speech yet after wake word / follow-up prompt ---
             if is_speech:
                 self._vad_speech_started = True
                 self._vad_speech_chunks = 1
                 self._vad_silence_start = None
                 logger.info("VAD: speech started at %.2fs (prob=%.2f)", elapsed, prob)
+            elif self.state == State.FOLLOWUP_LISTENING:
+                if time.monotonic() > self._followup_deadline:
+                    logger.info(
+                        "Follow-up listen: %.1fs window expired with no speech",
+                        self.settings.listener_followup_listen_secs,
+                    )
+                    self._close_elevenlabs_ws()
+                    self._unduck_spotify()
+                    self.state = State.IDLE
             elif elapsed > VAD_NO_SPEECH_TIMEOUT:
                 logger.info("VAD: no speech within %.1fs, aborting", VAD_NO_SPEECH_TIMEOUT)
                 self._close_elevenlabs_ws()
@@ -667,8 +791,9 @@ class Listener:
 
     def _transcribe_elevenlabs(self, audio_float: np.ndarray, use_diarization: bool = False) -> str | None:
         """Send audio to ElevenLabs Scribe API. Returns transcript or None.
-        
-        If use_diarization=True, returns only the first speaker's words (the wake word speaker).
+
+        If use_diarization=True, returns only the first diarized speaker's words. The caller
+        prepends anchor audio (wake clip or session copy) so that speaker is labeled first.
         """
         import io
         import struct
@@ -727,9 +852,9 @@ class Listener:
 
     def _filter_by_first_speaker(self, stt_result: dict) -> str | None:
         """Filter transcription to only include words from the first speaker.
-        
-        The first speaker is assumed to be the person who said "Hey Jarvis" since
-        we prepend the wake word audio to the command audio.
+
+        The first speaker is the anchor voice: prepended wake clip (or session copy
+        on follow-up), not the assistant TTS voice_id.
         
         Args:
             stt_result: ElevenLabs STT response with diarization enabled
@@ -852,33 +977,57 @@ class Listener:
 
         command_audio = np.concatenate(self._capture_frames).astype(np.float32) / 32768.0
         self._capture_frames = []
-        
-        # Determine if we should use speaker filtering
+
+        followup_no_sf = (
+            self._utterance_is_followup
+            and self.settings.listener_followup_skip_speaker_filter
+        )
+
+        # Speaker filter: prepend a short clip of the *user's* voice so diarization labels them
+        # as the first speaker; other voices (room/TTS bleed) get different labels and are dropped.
+        # Follow-up: optional full clip (no diarization) — first-speaker-only often drops half the phrase.
+        anchor_pcm: np.ndarray | None = None
+        anchor_label = "none"
+        if not followup_no_sf:
+            anchor_pcm = self._wakeword_audio
+            anchor_label = "wake_word_clip"
+            if anchor_pcm is None and self._session_speaker_anchor is not None:
+                anchor_pcm = self._session_speaker_anchor
+                anchor_label = "session_speaker_anchor"
+
         use_speaker_filter = (
             self.settings.speaker_filter_enabled
             and self._whisper_model == "elevenlabs"
-            and self._wakeword_audio is not None
+            and anchor_pcm is not None
+            and not followup_no_sf
         )
-        
+
         if use_speaker_filter:
-            # Prepend wake word audio for speaker identification
-            wakeword_float = self._wakeword_audio.astype(np.float32) / 32768.0
-            audio = np.concatenate([wakeword_float, command_audio])
+            anchor_float = anchor_pcm.astype(np.float32) / 32768.0
+            audio = np.concatenate([anchor_float, command_audio])
             logger.info(
-                "[DEBUG] Audio: %.2fs (%.2fs wake word + %.2fs command), speaker filtering ENABLED",
+                "[DEBUG] Audio: %.2fs (%.2fs %s + %.2fs command), speaker filtering ENABLED",
                 len(audio) / TARGET_RATE,
-                len(wakeword_float) / TARGET_RATE,
+                len(anchor_float) / TARGET_RATE,
+                anchor_label,
                 len(command_audio) / TARGET_RATE,
             )
         else:
             audio = command_audio
-            logger.info("[DEBUG] Audio: %.2fs, speaker filtering disabled (enabled=%s, elevenlabs=%s, wakeword_audio=%s)",
-                        len(audio) / TARGET_RATE,
-                        self.settings.speaker_filter_enabled,
-                        self._whisper_model == "elevenlabs",
-                        self._wakeword_audio is not None)
-        
-        # Clear wake word audio for next interaction
+            logger.info(
+                "[DEBUG] Audio: %.2fs, speaker filtering disabled (enabled=%s, elevenlabs=%s, "
+                "followup_no_sf=%s, wakeword_audio=%s, session_anchor=%s)",
+                len(audio) / TARGET_RATE,
+                self.settings.speaker_filter_enabled,
+                self._whisper_model == "elevenlabs",
+                followup_no_sf,
+                self._wakeword_audio is not None,
+                self._session_speaker_anchor is not None,
+            )
+
+        # Persist user voice anchor for follow-up turns; clear per-wake buffer now.
+        if self._wakeword_audio is not None:
+            self._session_speaker_anchor = np.copy(self._wakeword_audio)
         self._wakeword_audio = None
 
         text = None
@@ -939,6 +1088,7 @@ class Listener:
 
         logger.info("Transcript: %s", text)
         self._current_transcript = text
+        self._utterance_is_followup = False
         self._dispatch_intent(text)
 
     # ------------------------------------------------------------------
@@ -975,6 +1125,10 @@ class Listener:
         elif did_stream:
             logger.info("[DEBUG] Audio was streamed during processing, skipping file playback")
 
+        if response is not None and response.action_code == "MUSIC_SKIP_NO_NEXT":
+            self._transition_to_followup_listening()
+            return
+
         logger.info("[DEBUG] === STATE -> IDLE ===")
         if response.action_code == "MUSIC_VOLUME":
             logger.info("Skipping unduck — user changed volume intentionally")
@@ -986,7 +1140,7 @@ class Listener:
 
     def _play_response_audio(self, audio_url: str) -> None:
         """Play TTS audio in the listener thread (not on the event loop)."""
-        from app.core.audio_player import play_audio_file
+        from app.core.audio_player import DEFAULT_TTS_OUTPUT_LEAD_IN_SECS, play_audio_file
         from pathlib import Path
         static_root = Path(__file__).resolve().parent.parent / "static"
         if audio_url.startswith("/static/"):
@@ -994,7 +1148,11 @@ class Listener:
         else:
             local_path = static_root / "audio" / Path(audio_url).name
         if local_path.exists():
-            play_audio_file(local_path, blocking=True)
+            play_audio_file(
+                local_path,
+                blocking=True,
+                output_lead_in_secs=DEFAULT_TTS_OUTPUT_LEAD_IN_SECS,
+            )
         else:
             logger.warning("Audio file not found: %s", local_path)
 
@@ -1003,12 +1161,15 @@ class Listener:
         from app.core.personality import QUICK_REPLY_ACTIONS
 
         t0 = time.monotonic()
+        route_hint = getattr(self, "_followup_route_hint", "") or ""
+        self._followup_route_hint = ""
         request = IntentRequest(
             user_id=self.settings.listener_user_id,
             device_id=self.settings.listener_device_id,
             room=self.settings.listener_room,
             raw_text=text,
             timestamp=datetime.now(timezone.utc),
+            listener_route_hint=route_hint,
         )
 
         try:

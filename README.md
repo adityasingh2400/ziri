@@ -63,23 +63,25 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
 ## Features
 
 ### Voice Pipeline
-- **Always-on wake word detection** — "Hey Jarvis" via [openwakeword](https://github.com/dscripka/openWakeWord) (ONNX)
+- **Always-on wake word detection** — "Hey Jarvis" via [openwakeword](https://github.com/dscripka/openWakeWord) (ONNX). Defaults use a **higher score threshold**, **two consecutive 80 ms frames** above it, and a short **cooldown** after each trigger to cut false activations from loud music/TV. Tune with `WAKE_WORD_THRESHOLD` (lower only if real wakes are missed).
 - **Cloud speech-to-text** — ElevenLabs Scribe v2 Realtime via WebSocket streaming (~150ms latency), with local faster-whisper fallback
-- **Speaker-aware transcription (concurrent talk)** — when using ElevenLabs, the listener keeps a short rolling buffer of audio *before* the wake word, prepends it to the command clip, and calls Scribe with **diarization**. The model clusters audio into speakers (voice embeddings / acoustic similarity — not “frequency codes,” but learned features from the waveform). We keep only words tagged as the **first diarized speaker** (the person who said “Hey Jarvis” in that clip), so background chatter is less likely to pollute the command. Wake phrases are stripped from the final text before intent routing. Toggle with `SPEAKER_FILTER_ENABLED` (see Environment Variables).
+- **Speaker-aware transcription (concurrent talk)** — when using ElevenLabs, the listener keeps a short rolling buffer of audio *before* the wake word, prepends it to the command clip, and calls Scribe with **diarization**. The model clusters audio into speakers (acoustic similarity in the mic recording — **not** your ElevenLabs TTS `voice_id`, which is never compared to the mic). We keep only words tagged as the **first diarized speaker** (the person who said “Hey Jarvis” in that clip). After each wake turn, a **copy of that wake clip** is stored as a session anchor so **follow-up listening** (e.g. after `MUSIC_SKIP_NO_NEXT`) uses the same filter without saying “Hey Jarvis” again. Toggle with `SPEAKER_FILTER_ENABLED` (see Environment Variables).
 - **Live partial transcription** — words appear on the dashboard as you speak via realtime WebSocket partials
 - **ElevenLabs streaming TTS** — 192kbps MP3 via the `/stream` endpoint with `optimize_streaming_latency=3`
 - **Custom 11Labs sound effects** — wake word blip and thinking pulse generated with ElevenLabs SFX
 - **macOS system volume control** — "louder", "quieter", "set volume to X" control system output volume via osascript
 - **Spotify volume ducking** — music ducks to **45%** on wake (usable floor on many setups), gradually restores after response
+- **TTS playback** — a ~50 ms silent lead-in before each spoken reply avoids the first syllable sounding clipped: each `sounddevice` play opens a new output stream, and macOS/CoreAudio often applies a short startup ramp on that stream
 - **Silent quick commands** — "skip", "pause", "resume" execute instantly with no voice response
 
 #### How speaker filtering avoids cross-talk
 
 1. **Rolling pre-wake buffer** — While idle, recent mic audio (~2s) is retained so the moment “Hey Jarvis” fires, we still have the tail of that phrase in PCM.
-2. **Single clip for STT** — Pre-wake audio + post-wake “command” audio are concatenated and sent to ElevenLabs **Speech-to-Text** with `diarize=true` and word-level timestamps.
-3. **Diarization** — The service segments the clip and assigns `speaker_0`, `speaker_1`, … based on **who sounds like whom** in that file (embedding-style clustering over short windows). The first labeled speaker in the response is treated as the wake-word speaker.
+2. **Single clip for STT** — Anchor audio (pre-wake clip, or the saved session copy on follow-up) + command audio are concatenated and sent to ElevenLabs **Speech-to-Text** with `diarize=true` and word-level timestamps.
+3. **Diarization** — The service segments the clip and assigns `speaker_0`, `speaker_1`, … based on **who sounds like whom** in that file (embedding-style clustering over short windows). The first labeled speaker in the response is treated as the anchor speaker (you, from the wake clip).
 4. **Filter + strip** — Only words from that speaker are kept; leading “Hey Jarvis” / “Jarvis” variants are removed so the brain never sees the wake phrase as a command.
-5. **Limits** — IDs are **per request**, not a permanent voice profile. Overlap, similar voices, or TTS playing through the same mic can still confuse diarization; disable filtering with `SPEAKER_FILTER_ENABLED=false` if needed.
+5. **Limits** — IDs are **per request**, not a permanent voice profile. TTS echo is usually a *different* speaker cluster than you, but loud speakers, room reverb, or similar timbres can still confuse diarization; use `LISTENER_FOLLOWUP_MIC_DEAD_AIR_SECS` to trim TTS tail, or disable filtering with `SPEAKER_FILTER_ENABLED=false` if needed.
+6. **Follow-up after dead-end skip** — Optional **`LISTENER_FOLLOWUP_SKIP_SPEAKER_FILTER`** (default `true`): transcribe the follow-up utterance **without** diarization so phrases like “shuffle my playlist exotic melodies” aren’t split across fake speaker clusters. A one-shot route hint then maps bare playlist-style answers (e.g. “exotic melodies”) to **shuffle that playlist**.
 
 ### Multi-Agent AI System
 - **Supervisor-Worker architecture** — a Supervisor agent classifies intent into domains, then delegates to specialized sub-agents
@@ -109,7 +111,7 @@ Built with a focus on low latency, beautiful audio, seamless ambient integration
 - **Zero-overhead when disabled** — all tracing is no-op when Langfuse keys are not configured; Prometheus degrades gracefully without the package
 
 ### Integrations
-- **Spotify** — search, play, pause, skip, queue, shuffle, repeat, like, device control
+- **Spotify** — search, play, pause, skip, queue, shuffle, repeat, like, device control. If the desktop app is fully quit, Ziri runs `open -a Spotify` on macOS and waits for a **Spotify Connect** device before calling play/shuffle (fixes `NO_ACTIVE_DEVICE`). Set `SPOTIFY_DEFAULT_DEVICE_ID` when you have multiple targets.
 - **macOS system volume** — volume up/down/set via osascript for global audio control
 - **Google Calendar** — today's events, upcoming schedule
 - **iCloud Reminders** — create reminders via macOS bridge
@@ -302,8 +304,14 @@ See `.env.example` for all options. Key configuration:
 | `EMBEDDING_MODEL_ID` | Bedrock embedding model (default: `amazon.titan-embed-text-v1:0`) |
 | `SEMANTIC_MEMORY_ENABLED` | Enable/disable vector memory search (default: `true`) |
 | `SEMANTIC_MEMORY_TOP_K` | Number of similar turns to retrieve (default: `3`) |
+| `WAKE_WORD_THRESHOLD` | openWakeWord score 0–1; default `0.82` (was `0.5`) to reduce false triggers from audio bleed |
+| `WAKE_WORD_CONSECUTIVE_CHUNKS` | Frames in a row (80 ms each) that must exceed the threshold (default: `2`) |
+| `WAKE_WORD_COOLDOWN_SECS` | Minimum seconds between successful wake triggers (default: `2.5`; set `0` to disable) |
 | `SPEAKER_FILTER_ENABLED` | When `true` (default), ElevenLabs STT uses diarization + first-speaker filter for the always-on listener |
 | `SPEAKER_FILTER_PRE_WAKEWORD_SECS` | Seconds of pre-wake-word audio to include for speaker anchoring (default: `1.5`) |
+| `LISTENER_FOLLOWUP_LISTEN_SECS` | Max window for speech after dead-end skip prompt (default: `8`) |
+| `LISTENER_FOLLOWUP_MIC_DEAD_AIR_SECS` | Drop mic audio this long after TTS before follow-up capture (default: `1.35`) |
+| `LISTENER_FOLLOWUP_SKIP_SPEAKER_FILTER` | When `true` (default), follow-up utterance uses full STT without diarization |
 
 ## API
 

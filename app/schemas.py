@@ -24,6 +24,8 @@ class IntentRequest(BaseModel):
     room: str = Field(min_length=1, max_length=120)
     raw_text: str = Field(min_length=1, max_length=3000)
     timestamp: datetime
+    # Set by always-on listener only: refines routing for the next utterance (e.g. after skip dead-end).
+    listener_route_hint: str = Field(default="", max_length=64)
 
     @field_validator("timestamp")
     @classmethod

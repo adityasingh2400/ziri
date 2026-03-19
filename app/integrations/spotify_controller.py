@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import platform
 import subprocess
+import time
 from typing import Any
 
 from app.settings import Settings
@@ -197,6 +199,88 @@ class SpotifyController:
 
         return target
 
+    def _list_devices(self, client: Any) -> list[dict[str, Any]]:
+        try:
+            payload = client.devices()
+            raw = payload.get("devices", []) if isinstance(payload, dict) else []
+            return [d for d in raw if isinstance(d, dict) and d.get("id")]
+        except Exception:
+            return []
+
+    def _pick_best_device_id(
+        self,
+        devices: list[dict[str, Any]],
+        explicit_device_id: str | None,
+        speaker_name: str | None,
+    ) -> str | None:
+        if not devices:
+            return None
+        if explicit_device_id and any(d.get("id") == explicit_device_id for d in devices):
+            return explicit_device_id
+        if speaker_name:
+            lowered = speaker_name.lower()
+            for device in devices:
+                name = str(device.get("name", "")).lower()
+                if lowered in name or name in lowered:
+                    return device.get("id")
+        for device in devices:
+            if device.get("is_active"):
+                return device.get("id")
+        default = self.settings.spotify_default_device_id
+        if default and any(d.get("id") == default for d in devices):
+            return default
+        for device in devices:
+            dtype = str(device.get("type", "")).lower()
+            if dtype == "computer":
+                return device.get("id")
+        return devices[0].get("id")
+
+    def _launch_spotify_app(self) -> None:
+        """Open Spotify so a Connect device appears (macOS). No-op elsewhere."""
+        if platform.system() != "Darwin":
+            return
+        try:
+            subprocess.run(
+                ["open", "-a", "Spotify"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            logger.info("Launched Spotify app (macOS) — waiting for Connect device…")
+        except Exception as exc:
+            logger.debug("Could not launch Spotify: %s", exc)
+
+    def _ensure_playback_device(
+        self,
+        client: Any,
+        explicit_device_id: str | None,
+        speaker_name: str | None,
+    ) -> str | None:
+        """Resolve a Spotify Connect device; launch desktop app and poll if none.
+
+        Required for player endpoints (shuffle, play) when Spotify was fully quit.
+        """
+        devices = self._list_devices(client)
+        picked = self._pick_best_device_id(devices, explicit_device_id, speaker_name)
+        if picked:
+            if not any(d.get("is_active") for d in devices):
+                self._wake_device(client, picked)
+            return picked
+
+        self._launch_spotify_app()
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline:
+            time.sleep(0.45)
+            devices = self._list_devices(client)
+            picked = self._pick_best_device_id(devices, explicit_device_id, speaker_name)
+            if picked:
+                self._wake_device(client, picked)
+                logger.info("Spotify Connect device ready after launch")
+                return picked
+
+        logger.warning("No Spotify Connect devices after waiting (is the Spotify app installed?)")
+        return None
+
     @staticmethod
     def _build_search_query(raw_query: str) -> str:
         """Parse natural language into Spotify field-filtered search.
@@ -325,15 +409,20 @@ class SpotifyController:
             external_url = top_track.get("external_urls", {}).get("spotify")
 
             if can_control_playback:
-                target_device = self._ensure_active_device(
+                target_device = self._ensure_playback_device(
                     client=client,
                     explicit_device_id=spotify_device_id,
                     speaker_name=speaker_name,
                 )
-                if target_device:
-                    client.start_playback(device_id=target_device, uris=[uri])
-                else:
-                    client.start_playback(uris=[uri])
+                if not target_device:
+                    return ToolResult(
+                        ok=False,
+                        action_code="MUSIC_ERROR",
+                        speak_text="Open Spotify on this Mac, then try that again.",
+                        private_note="no_spotify_connect_device",
+                        error="no_active_device",
+                    )
+                client.start_playback(device_id=target_device, uris=[uri])
                 return ToolResult(
                     ok=True,
                     action_code="MUSIC_START",
@@ -466,16 +555,77 @@ class SpotifyController:
                 explicit_device_id=spotify_device_id,
                 speaker_name=speaker_name,
             )
+            before = client.current_playback() or {}
+            before_item = before.get("item") or {}
+            before_id = before_item.get("id")
+            primary_artist = ""
+            artists = before_item.get("artists") or []
+            if artists:
+                primary_artist = str(artists[0].get("name") or "").strip()
+
             if target_device:
                 client.next_track(device_id=target_device)
             else:
                 client.next_track()
 
+            # After a one-track play, Spotify often pauses with no "next". The API may also
+            # briefly report the *same* track as still playing (stale). We only treat as a
+            # real skip when a *different* track id is playing.
+            #
+            # Important: if playback has already stopped, return immediately — the old loop
+            # used `continue` on paused/empty states and burned 16× sleep + 16 API calls (~s).
+            after_playing = False
+            delays = (0.05, 0.08, 0.10, 0.12)
+            for i, delay in enumerate(delays):
+                time.sleep(delay)
+                after = client.current_playback() or {}
+                item = after.get("item")
+                playing = bool(after.get("is_playing"))
+                last_poll = i == len(delays) - 1
+
+                if not isinstance(item, dict):
+                    # Briefly empty while advancing to the next track — retry unless last poll.
+                    if last_poll:
+                        break
+                    continue
+
+                after_id = item.get("id")
+                if playing:
+                    if before_id and after_id and after_id != before_id:
+                        after_playing = True
+                        break
+                    if before_id and after_id == before_id:
+                        continue
+                    if not before_id and after_id:
+                        after_playing = True
+                        break
+                    continue
+
+                # Paused / stopped but item metadata still present (common after dead-end skip).
+                break
+
+            if after_playing:
+                return ToolResult(
+                    ok=True,
+                    action_code="MUSIC_SKIP",
+                    speak_text="Skipped to the next track.",
+                    private_note="",
+                )
+
+            suggestion = (
+                f"Want me to play more from {primary_artist}, or shuffle one of your playlists?"
+                if primary_artist
+                else "Want me to shuffle a playlist or pick something else to play?"
+            )
+            speak = (
+                "There wasn't another track lined up after that one, so Spotify paused. "
+                + suggestion
+            )
             return ToolResult(
                 ok=True,
-                action_code="MUSIC_SKIP",
-                speak_text="Skipped to the next track.",
-                private_note="",
+                action_code="MUSIC_SKIP_NO_NEXT",
+                speak_text=speak,
+                private_note="skip_dead_end",
             )
         except Exception as exc:
             logger.exception("Spotify skip failed")
@@ -561,14 +711,19 @@ class SpotifyController:
             return ToolResult(ok=False, action_code="MUSIC_ERROR", speak_text="", private_note="Resume requires user auth.", error=err)
 
         try:
-            target = self._ensure_active_device(client, spotify_device_id, speaker_name)
+            target = self._ensure_playback_device(client, spotify_device_id, speaker_name)
             playback = client.current_playback() or {}
             if playback.get("is_playing", False):
                 return ToolResult(ok=True, action_code="MUSIC_RESUME", speak_text="Already playing.", private_note="")
-            if target:
-                client.start_playback(device_id=target)
-            else:
-                client.start_playback()
+            if not target:
+                return ToolResult(
+                    ok=False,
+                    action_code="MUSIC_ERROR",
+                    speak_text="Open Spotify on this Mac, then say resume again.",
+                    private_note="no_spotify_connect_device",
+                    error="no_active_device",
+                )
+            client.start_playback(device_id=target)
             return ToolResult(ok=True, action_code="MUSIC_RESUME", speak_text="Resumed.", private_note="")
         except Exception as exc:
             logger.exception("Spotify resume failed")
@@ -600,7 +755,16 @@ class SpotifyController:
             return ToolResult(ok=False, action_code="MUSIC_ERROR", speak_text="", private_note="Shuffle requires user auth.", error=err)
 
         try:
-            client.shuffle(state)
+            target = self._ensure_playback_device(client, None, None)
+            if not target:
+                return ToolResult(
+                    ok=False,
+                    action_code="MUSIC_ERROR",
+                    speak_text="Open Spotify on this Mac first, then try shuffle again.",
+                    private_note="no_spotify_connect_device",
+                    error="no_active_device",
+                )
+            client.shuffle(state, device_id=target)
             label = "on" if state else "off"
             return ToolResult(ok=True, action_code="MUSIC_SHUFFLE", speak_text=f"Shuffle {label}.", private_note="")
         except Exception as exc:
@@ -616,7 +780,16 @@ class SpotifyController:
         if mode not in valid_modes:
             mode = "off"
         try:
-            client.repeat(mode)
+            target = self._ensure_playback_device(client, None, None)
+            if not target:
+                return ToolResult(
+                    ok=False,
+                    action_code="MUSIC_ERROR",
+                    speak_text="Open Spotify on this Mac first, then try repeat again.",
+                    private_note="no_spotify_connect_device",
+                    error="no_active_device",
+                )
+            client.repeat(mode, device_id=target)
             label = {"off": "off", "track": "this track", "context": "this playlist"}.get(mode, mode)
             return ToolResult(ok=True, action_code="MUSIC_REPEAT", speak_text=f"Repeat set to {label}.", private_note="")
         except Exception as exc:
@@ -712,11 +885,16 @@ class SpotifyController:
             title = track.get("name", "that track")
             artist_name = ", ".join(a.get("name", "") for a in track.get("artists", []))
 
-            target = self._ensure_active_device(client, spotify_device_id, speaker_name)
-            if target:
-                client.add_to_queue(uri, device_id=target)
-            else:
-                client.add_to_queue(uri)
+            target = self._ensure_playback_device(client, spotify_device_id, speaker_name)
+            if not target:
+                return ToolResult(
+                    ok=False,
+                    action_code="MUSIC_ERROR",
+                    speak_text="Open Spotify on this Mac, then try adding to the queue again.",
+                    private_note="no_spotify_connect_device",
+                    error="no_active_device",
+                )
+            client.add_to_queue(uri, device_id=target)
 
             return ToolResult(ok=True, action_code="MUSIC_QUEUE", speak_text=f"Added {title} by {artist_name} to the queue.", private_note="", payload={"title": title, "artist": artist_name, "spotify_uri": uri})
         except Exception as exc:
@@ -758,13 +936,18 @@ class SpotifyController:
             artist_name = artist.get("name", query)
 
             if can_control:
+                target = self._ensure_playback_device(client, spotify_device_id, speaker_name)
+                if not target:
+                    return ToolResult(
+                        ok=False,
+                        action_code="MUSIC_ERROR",
+                        speak_text="Open Spotify on this Mac, then try again.",
+                        private_note="no_spotify_connect_device",
+                        error="no_active_device",
+                    )
                 if shuffle:
-                    client.shuffle(True)
-                target = self._ensure_active_device(client, spotify_device_id, speaker_name)
-                if target:
-                    client.start_playback(device_id=target, context_uri=artist_uri)
-                else:
-                    client.start_playback(context_uri=artist_uri)
+                    client.shuffle(True, device_id=target)
+                client.start_playback(device_id=target, context_uri=artist_uri)
                 label = "Shuffling" if shuffle else "Playing"
                 return ToolResult(ok=True, action_code="MUSIC_START", speak_text=f"{label} {artist_name}.", private_note="", payload={"artist": artist_name, "spotify_uri": artist_uri})
 
@@ -818,14 +1001,18 @@ class SpotifyController:
                 playlist_name = playlist.get("name", query)
 
             if can_control:
+                target = self._ensure_playback_device(client, spotify_device_id, speaker_name)
+                if not target:
+                    return ToolResult(
+                        ok=False,
+                        action_code="MUSIC_ERROR",
+                        speak_text="Open Spotify on this Mac, then try that playlist again.",
+                        private_note="no_spotify_connect_device",
+                        error="no_active_device",
+                    )
                 if shuffle:
-                    client.shuffle(True)
-                target = self._ensure_active_device(client, spotify_device_id, speaker_name)
-                if target:
-                    client.start_playback(device_id=target, context_uri=playlist_uri)
-                else:
-                    client.start_playback(context_uri=playlist_uri)
-                place = ""
+                    client.shuffle(True, device_id=target)
+                client.start_playback(device_id=target, context_uri=playlist_uri)
                 label = "Shuffling" if shuffle else "Playing"
                 return ToolResult(ok=True, action_code="MUSIC_START", speak_text=f"{label} {playlist_name}.", private_note="", payload={"playlist": playlist_name, "spotify_uri": playlist_uri})
 
